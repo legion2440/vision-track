@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=80.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vision-track"
+version = "0.1.0"
+description = "Multi-stream person detection, tracking, and counting"
+requires-python = "==3.11.*"
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-ra --basetemp=.pytest-tmp -p no:cacheprovider"
+markers = [
+  "integration: integration tests",
+  "slow: model or application smoke tests",
+]

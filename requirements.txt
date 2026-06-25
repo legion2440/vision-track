@@ -1,0 +1,17 @@
+# Python 3.11 reproducible environment (verified package metadata on 2026-06-25).
+numpy==2.4.6
+scipy==1.17.1
+torch==2.12.1
+ultralytics==8.4.78
+supervision==0.29.1
+opencv-python==4.13.0.92
+streamlit==1.58.0
+onnx==1.22.0
+onnxruntime==1.27.0
+torch-pruning==1.6.1
+PyYAML==6.0.3
+pandas==3.0.3
+matplotlib==3.11.0
+jsonschema==4.26.0
+pytest==9.1.1
+jupyter==1.1.1

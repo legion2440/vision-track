@@ -1,0 +1,5 @@
+
+2026-06-25 22:31:18,117 | stream_id=stream-ef23585f | source_type=local | state=FAILED | ERROR | FileNotFoundError: Video file not found: D:\TSchool\vision-track\.pytest-tmp\test_working_and_broken_source0\missing.mp4
+2026-06-25 22:31:50,122 | stream_id=stream-b6215d23 | source_type=local | state=FAILED | ERROR | FileNotFoundError: Video file not found: D:\TSchool\vision-track\.pytest-tmp\test_working_and_broken_source0\missing.mp4
+2026-06-25 22:36:21,402 | stream_id=stream-e4c72e10 | source_type=local | state=FAILED | ERROR | FileNotFoundError: Video file not found: D:\TSchool\vision-track\.pytest-tmp\test_working_and_broken_source0\missing.mp4
+2026-06-25 22:39:46,611 | stream_id=stream-b4ca97e5 | source_type=local | state=FAILED | ERROR | FileNotFoundError: Video file not found: D:\TSchool\vision-track\.pytest-tmp\test_working_and_broken_source0\missing.mp4

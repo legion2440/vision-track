@@ -1,0 +1,30 @@
+model_name: yolo26n.pt
+task: detect
+classes:
+  0: person
+image_size: 640
+seed: 42
+training:
+  epochs: 80
+  batch_size: 16
+  patience: 12
+  optimizer: AdamW
+  learning_rate: 0.001
+  weight_decay: 0.0005
+  validation_each_epoch: true
+  final_test_evaluation_once: true
+pruning:
+  method: torch_pruning_magnitude
+  channel_sparsity: 0.20
+  recovery_epochs: 10
+quantization:
+  format: onnx
+  precision: int8
+  calibration_split: train
+  calibration_images: 256
+  opset: 17
+artifact_status:
+  best.pt: generated_by_scripts/train.py
+  best_pruned.pt: generated_by_scripts/prune.py
+  best_quantized.onnx: generated_by_scripts/quantize.py
+

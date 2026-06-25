@@ -1,0 +1,77 @@
+project:
+  name: VisionTrack
+  seed: 42
+  log_file: logs/app_errors.log
+
+model:
+  pretrained: yolo26n.pt
+  checkpoint: models/checkpoints/best.pt
+  pruned_checkpoint: models/checkpoints/best_pruned.pt
+  quantized_checkpoint: models/checkpoints/best_quantized.onnx
+  image_size: 640
+  confidence: 0.35
+  iou: 0.50
+  person_class_id: 0
+
+training:
+  dataset_yaml: data/processed/coco_person/dataset.yaml
+  epochs: 80
+  batch_size: 16
+  patience: 12
+  optimizer: AdamW
+  learning_rate: 0.001
+  weight_decay: 0.0005
+  workers: 4
+  augmentations:
+    hsv_h: 0.015
+    hsv_s: 0.7
+    hsv_v: 0.4
+    degrees: 3.0
+    translate: 0.1
+    scale: 0.5
+    fliplr: 0.5
+    mosaic: 0.5
+
+pruning:
+  method: torch_pruning_magnitude
+  channel_sparsity: 0.20
+  iterative_steps: 1
+  recovery_epochs: 10
+
+quantization:
+  format: onnx
+  mode: static_int8
+  calibration_split: train
+  calibration_images: 256
+  opset: 17
+
+tracking:
+  track_activation_threshold: 0.25
+  lost_track_buffer: 30
+  minimum_matching_threshold: 0.80
+  minimum_consecutive_frames: 2
+  frame_rate: 30
+  trajectory_length: 30
+
+counting:
+  line_start: [0.15, 0.55]
+  line_end: [0.85, 0.55]
+  polygon:
+    - [0.15, 0.20]
+    - [0.85, 0.20]
+    - [0.85, 0.90]
+    - [0.15, 0.90]
+
+runtime:
+  reconnect_attempts: 5
+  reconnect_backoff_seconds: 1.0
+  scheduler_idle_seconds: 0.005
+  max_batch_size: 4
+  max_batch_wait_ms: 10
+
+benchmark:
+  resolution: [1280, 720]
+  warmup_frames: 20
+  measured_frames: 200
+  stream_counts: [1, 2]
+
