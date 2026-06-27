@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from vision_track.configuration import load_config, resolve_project_path
+from vision_track.detector import InferenceResult
 from vision_track.detector import create_backend
 from vision_track.device import DeviceInfo, select_device
 from vision_track.metrics import detection_scores
@@ -74,6 +75,25 @@ def _warmup_backend(backend, image_paths: list[Path], warmup_count: int) -> None
             backend.infer(image)
 
 
+def validate_cpu_comparison_runtime(
+    *,
+    backend_name: str,
+    result: InferenceResult,
+) -> None:
+    if backend_name == "onnxruntime":
+        if result.device != "cpu" or result.provider != "CPUExecutionProvider":
+            raise RuntimeError(
+                "Normalized ONNX comparison expected CPUExecutionProvider on CPU, "
+                f"got device={result.device!r}, provider={result.provider!r}"
+            )
+        return
+    if not result.device.startswith("cpu"):
+        raise RuntimeError(
+            "Normalized PyTorch comparison expected CPU execution, "
+            f"got device={result.device!r}"
+        )
+
+
 def evaluate_artifact(
     *,
     name: str,
@@ -111,6 +131,7 @@ def evaluate_artifact(
         if image is None:
             continue
         result = backend.infer(image)
+        validate_cpu_comparison_runtime(backend_name=backend_name, result=result)
         last_backend = result.backend
         last_device = result.device
         last_provider = result.provider
@@ -150,6 +171,61 @@ def evaluate_artifact(
     }
 
 
+def artifact_specs(config, comparison_device: DeviceInfo) -> list[tuple[str, Path, str, DeviceInfo]]:
+    return [
+        (
+            "fine_tuned",
+            resolve_project_path(config.model.checkpoint),
+            "pytorch",
+            comparison_device,
+        ),
+        (
+            "pruned",
+            resolve_project_path(config.model.pruned_checkpoint),
+            "pytorch",
+            comparison_device,
+        ),
+        (
+            "quantized_int8",
+            resolve_project_path(config.model.quantized_checkpoint),
+            "onnxruntime",
+            comparison_device,
+        ),
+    ]
+
+
+def build_comparison_payload(
+    *,
+    split: str,
+    image_size: int,
+    confidence: float,
+    nms_iou: float,
+    gt_iou: float,
+    image_limit: int | None,
+    warmup_count: int,
+    measured_image_count: int,
+    comparison_device: str,
+    test_isolation_acknowledged: bool,
+    models: list[dict],
+) -> dict:
+    return {
+        "protocol": {
+            "split": split,
+            "image_size": image_size,
+            "confidence_threshold": confidence,
+            "nms_iou_threshold": nms_iou,
+            "ground_truth_iou_threshold": gt_iou,
+            "image_limit": image_limit,
+            "warmup_count": warmup_count,
+            "measured_image_count": measured_image_count,
+            "comparison_device": comparison_device,
+            "matching": "greedy descending IoU, one prediction per ground-truth box",
+        },
+        "test_isolation_acknowledged": test_isolation_acknowledged,
+        "models": models,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Compare trained, pruned, and INT8 models")
     parser.add_argument("--split", choices=["val", "test"], default="val")
@@ -179,17 +255,8 @@ def main() -> None:
     if not label_dir.exists():
         raise FileNotFoundError(f"Label split not found: {label_dir}")
     image_paths = image_paths_for_split(image_dir, limit=args.limit)
-    device = select_device()
-    artifacts = [
-        ("fine_tuned", resolve_project_path(config.model.checkpoint), "pytorch", device),
-        ("pruned", resolve_project_path(config.model.pruned_checkpoint), "pytorch", device),
-        (
-            "quantized_int8",
-            resolve_project_path(config.model.quantized_checkpoint),
-            "onnxruntime",
-            device,
-        ),
-    ]
+    comparison_device = select_device(force="cpu")
+    artifacts = artifact_specs(config, comparison_device)
     models = []
     for name, path, backend_name, artifact_device in artifacts:
         if not path.exists():
@@ -219,21 +286,19 @@ def main() -> None:
                 "error": str(exc),
             }
         models.append(result)
-    payload = {
-        "protocol": {
-            "split": args.split,
-            "image_size": config.model.image_size,
-            "confidence_threshold": args.confidence,
-            "nms_iou_threshold": args.nms_iou,
-            "ground_truth_iou_threshold": args.gt_iou,
-            "image_limit": args.limit,
-            "warmup_count": args.warmup,
-            "measured_image_count": len(image_paths),
-            "matching": "greedy descending IoU, one prediction per ground-truth box",
-        },
-        "test_isolation_acknowledged": args.acknowledge_test_isolation,
-        "models": models,
-    }
+    payload = build_comparison_payload(
+        split=args.split,
+        image_size=config.model.image_size,
+        confidence=args.confidence,
+        nms_iou=args.nms_iou,
+        gt_iou=args.gt_iou,
+        image_limit=args.limit,
+        warmup_count=args.warmup,
+        measured_image_count=len(image_paths),
+        comparison_device=comparison_device.kind,
+        test_isolation_acknowledged=args.acknowledge_test_isolation,
+        models=models,
+    )
     output = ROOT / "reports" / "artifact_comparison.json"
     output.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(payload, indent=2))

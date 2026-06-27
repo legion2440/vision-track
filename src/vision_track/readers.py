@@ -47,11 +47,14 @@ def _valid_timestamp_ms(value: float | None, previous: float | None) -> float | 
 
 def _local_read_is_eof(capture: cv2.VideoCapture, frames_read: int) -> bool:
     frame_count = _safe_capture_value(capture, cv2.CAP_PROP_FRAME_COUNT)
-    if frame_count is None or frame_count <= 0:
-        return frames_read > 0
-    current_position = _safe_capture_value(capture, cv2.CAP_PROP_POS_FRAMES)
-    position = current_position if current_position is not None else float(frames_read)
-    return frames_read >= int(frame_count) or position >= frame_count
+    if frame_count is not None and frame_count > 0:
+        current_position = _safe_capture_value(capture, cv2.CAP_PROP_POS_FRAMES)
+        if current_position is not None and current_position >= frame_count - 1:
+            return True
+        if frames_read >= int(frame_count):
+            return True
+    ratio = _safe_capture_value(capture, cv2.CAP_PROP_POS_AVI_RATIO)
+    return ratio is not None and ratio >= 0.99
 
 
 class VideoReader:
@@ -162,6 +165,9 @@ class VideoReader:
                                 if self._stop_event.wait(LOCAL_RETRY_WAIT_SECONDS):
                                     break
                                 continue
+                            if _local_read_is_eof(self._capture, frame_index):
+                                self.state_callback(StreamState.EOF)
+                                return
                             raise OSError(
                                 "Decode failure before end of local video: "
                                 f"{self.source.safe_uri}"

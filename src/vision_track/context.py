@@ -17,6 +17,8 @@ class StreamMetrics:
     processed_frames: int = 0
     inference_latency_ms: float = 0.0
     end_to_end_latency_ms: float = 0.0
+    inference_latency_total_ms: float = 0.0
+    end_to_end_latency_total_ms: float = 0.0
     fps: float = 0.0
     last_processed_at: float | None = None
 
@@ -28,12 +30,14 @@ class StreamMetrics:
             self.fps = instantaneous if self.fps == 0 else 0.9 * self.fps + 0.1 * instantaneous
         self.last_processed_at = now
         self.processed_frames += 1
+        self.inference_latency_total_ms += inference_ms
         self.inference_latency_ms = (
             inference_ms
             if self.processed_frames == 1
             else 0.9 * self.inference_latency_ms + 0.1 * inference_ms
         )
         end_to_end = (now - captured_at) * 1000.0
+        self.end_to_end_latency_total_ms += end_to_end
         self.end_to_end_latency_ms = (
             end_to_end
             if self.processed_frames == 1

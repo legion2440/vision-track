@@ -29,12 +29,22 @@ def mask_sensitive(value: str) -> str:
 
 
 def configure_logging(log_path: str | Path) -> logging.Logger:
-    path = Path(log_path)
+    path = Path(log_path).resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger("vision_track")
     logger.setLevel(logging.INFO)
     logger.propagate = False
-    if not any(isinstance(handler, RotatingFileHandler) for handler in logger.handlers):
+    has_requested_handler = False
+    for handler in list(logger.handlers):
+        if not isinstance(handler, RotatingFileHandler):
+            continue
+        handler_path = Path(handler.baseFilename).resolve()
+        if handler_path == path:
+            has_requested_handler = True
+            continue
+        logger.removeHandler(handler)
+        handler.close()
+    if not has_requested_handler:
         handler = RotatingFileHandler(
             path, maxBytes=5_000_000, backupCount=3, encoding="utf-8"
         )
@@ -64,4 +74,3 @@ def log_stream_error(
     }
     message = f"{type(exc).__name__}: {mask_sensitive(str(exc))}"
     logger.error(message, exc_info=unexpected, extra=extra)
-

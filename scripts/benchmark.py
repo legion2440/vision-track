@@ -115,9 +115,41 @@ def skipped(name: str, reason: str) -> dict:
     return {"name": name, "status": "skipped", "reason": reason}
 
 
+def _finite_positive(value: float) -> bool:
+    return bool(np.isfinite(value) and value > 0)
+
+
 def _capture_fps(capture: cv2.VideoCapture) -> float:
     value = float(capture.get(cv2.CAP_PROP_FPS))
     return value if np.isfinite(value) and 0 < value <= 240 else 30.0
+
+
+def _known_video_duration_seconds(path: Path) -> float | None:
+    capture = cv2.VideoCapture(str(path))
+    if not capture.isOpened():
+        return None
+    try:
+        frame_count = float(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = float(capture.get(cv2.CAP_PROP_FPS))
+        if not (_finite_positive(frame_count) and _finite_positive(fps) and fps <= 240):
+            return None
+        return frame_count / fps
+    finally:
+        capture.release()
+
+
+def _primary_duration_failure(
+    videos: list[Path],
+    required_seconds: float,
+) -> str | None:
+    for path in videos:
+        duration = _known_video_duration_seconds(path)
+        if duration is not None and duration < required_seconds:
+            return (
+                f"Primary input {path} is {duration:.2f}s, shorter than required "
+                f"warmup+measured duration {required_seconds:.2f}s"
+            )
+    return None
 
 
 def prepare_resized_video(
@@ -151,6 +183,75 @@ def prepare_resized_video(
     return destination
 
 
+def _snapshot_context(context) -> dict[str, float | int]:
+    with context.lock:
+        return {
+            "processed_frames": context.metrics.processed_frames,
+            "inference_latency_total_ms": context.metrics.inference_latency_total_ms,
+            "end_to_end_latency_total_ms": context.metrics.end_to_end_latency_total_ms,
+            "queue_received": context.queue.received,
+            "queue_dropped": context.queue.dropped,
+        }
+
+
+def _delta(end: float | int, start: float | int) -> float:
+    return max(0.0, float(end) - float(start))
+
+
+def _divide_or_zero(numerator: float, denominator: float) -> float:
+    return numerator / denominator if denominator > 0 else 0.0
+
+
+def summarize_primary_window(
+    start_snapshots: dict[str, dict[str, float | int]],
+    end_snapshots: dict[str, dict[str, float | int]],
+    measured_elapsed: float,
+) -> dict:
+    per_stream = {}
+    total_processed = 0.0
+    total_inference_ms = 0.0
+    total_end_to_end_ms = 0.0
+    total_received = 0.0
+    total_dropped = 0.0
+    for stream_id, start in start_snapshots.items():
+        end = end_snapshots[stream_id]
+        processed = _delta(end["processed_frames"], start["processed_frames"])
+        inference_ms = _delta(
+            end["inference_latency_total_ms"],
+            start["inference_latency_total_ms"],
+        )
+        end_to_end_ms = _delta(
+            end["end_to_end_latency_total_ms"],
+            start["end_to_end_latency_total_ms"],
+        )
+        received = _delta(end["queue_received"], start["queue_received"])
+        dropped = _delta(end["queue_dropped"], start["queue_dropped"])
+        total_processed += processed
+        total_inference_ms += inference_ms
+        total_end_to_end_ms += end_to_end_ms
+        total_received += received
+        total_dropped += dropped
+        per_stream[stream_id] = {
+            "processed_frames": int(processed),
+            "fps": _divide_or_zero(processed, measured_elapsed),
+            "average_inference_latency_ms": _divide_or_zero(inference_ms, processed),
+            "average_end_to_end_latency_ms": _divide_or_zero(end_to_end_ms, processed),
+            "received_frames": int(received),
+            "dropped_frames": int(dropped),
+            "dropped_frame_rate": _divide_or_zero(dropped, received),
+        }
+    fps_values = [item["fps"] for item in per_stream.values()]
+    return {
+        "per_stream": per_stream,
+        "total_processed_frames": int(total_processed),
+        "aggregate_fps": _divide_or_zero(total_processed, measured_elapsed),
+        "fps_per_stream": statistics.fmean(fps_values) if fps_values else 0.0,
+        "inference_latency_ms": _divide_or_zero(total_inference_ms, total_processed),
+        "end_to_end_latency_ms": _divide_or_zero(total_end_to_end_ms, total_processed),
+        "dropped_frame_rate": _divide_or_zero(total_dropped, total_received),
+    }
+
+
 def run_processing_engine_scenario(
     *,
     name: str,
@@ -164,6 +265,17 @@ def run_processing_engine_scenario(
     warmup_seconds: float,
     measured_seconds: float,
 ) -> dict:
+    duration_failure = _primary_duration_failure(videos, warmup_seconds + measured_seconds)
+    if duration_failure is not None:
+        return {
+            "name": name,
+            "status": "failed",
+            "reason": duration_failure,
+            "model": str(model_path),
+            "backend": backend_name,
+            "streams": len(videos),
+            "resolution": list(resolution),
+        }
     device = select_device(force=device_name) if device_name else select_device()
     detector = create_backend(
         backend_name,
@@ -181,8 +293,8 @@ def run_processing_engine_scenario(
         warmup_deadline = time.perf_counter() + warmup_seconds
         while time.perf_counter() < warmup_deadline:
             time.sleep(0.05)
-        start_frames = {
-            stream_id: engine.get(stream_id).metrics.processed_frames
+        start_snapshots = {
+            stream_id: _snapshot_context(engine.get(stream_id))
             for stream_id in stream_ids
         }
         started = time.perf_counter()
@@ -191,14 +303,12 @@ def run_processing_engine_scenario(
             time.sleep(0.05)
         elapsed = time.perf_counter() - started
         contexts = [engine.get(stream_id) for stream_id in stream_ids]
-        processed = {
-            context.stream_id: max(
-                0,
-                context.metrics.processed_frames - start_frames[context.stream_id],
-            )
+        end_snapshots = {
+            context.stream_id: _snapshot_context(context)
             for context in contexts
         }
-        total_processed = sum(processed.values())
+        window = summarize_primary_window(start_snapshots, end_snapshots, elapsed)
+        total_processed = window["total_processed_frames"]
         if total_processed == 0:
             return {
                 "name": name,
@@ -209,19 +319,7 @@ def run_processing_engine_scenario(
                 "streams": len(stream_ids),
                 "resolution": list(resolution),
             }
-        inference_latencies = [
-            context.metrics.inference_latency_ms
-            for context in contexts
-            if context.metrics.processed_frames > 0
-        ]
-        end_to_end_latencies = [
-            context.metrics.end_to_end_latency_ms
-            for context in contexts
-            if context.metrics.processed_frames > 0
-        ]
-        dropped_rates = [context.queue.dropped_rate for context in contexts]
         first_context = contexts[0]
-        aggregate_fps = total_processed / elapsed if elapsed > 0 else 0.0
         return {
             "name": name,
             "status": "ok",
@@ -237,15 +335,19 @@ def run_processing_engine_scenario(
             "image_size": image_size,
             "warmup_seconds": warmup_seconds,
             "measured_seconds": measured_seconds,
-            "processed_frames_per_stream": processed,
+            "processed_frames_per_stream": {
+                stream_id: item["processed_frames"]
+                for stream_id, item in window["per_stream"].items()
+            },
+            "per_stream": window["per_stream"],
             "tracking_enabled": True,
             "counting_enabled": True,
             "rendering_enabled": True,
-            "inference_latency_ms": statistics.fmean(inference_latencies),
-            "end_to_end_latency_ms": statistics.fmean(end_to_end_latencies),
-            "dropped_frame_rate": statistics.fmean(dropped_rates),
-            "aggregate_fps": aggregate_fps,
-            "fps_per_stream": aggregate_fps / len(stream_ids),
+            "inference_latency_ms": window["inference_latency_ms"],
+            "end_to_end_latency_ms": window["end_to_end_latency_ms"],
+            "dropped_frame_rate": window["dropped_frame_rate"],
+            "aggregate_fps": window["aggregate_fps"],
+            "fps_per_stream": window["fps_per_stream"],
         }
     finally:
         engine.shutdown()

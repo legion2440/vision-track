@@ -5,6 +5,7 @@ import json
 import numpy as np
 from jsonschema import validate
 
+from vision_track.context import StreamMetrics
 from vision_track.metrics import PERFORMANCE_SCHEMA, detection_scores
 
 
@@ -24,3 +25,18 @@ def test_performance_report_schema() -> None:
     payload = json.loads(open("reports/performance_metrics.json", encoding="utf-8").read())
     validate(instance=payload, schema=PERFORMANCE_SCHEMA)
 
+
+def test_stream_metrics_keep_ewma_and_cumulative_totals(monkeypatch) -> None:
+    import vision_track.context as context_module
+
+    times = iter([10.0, 11.0])
+    monkeypatch.setattr(context_module, "perf_counter", lambda: next(times))
+    metrics = StreamMetrics()
+
+    metrics.update(5.0, captured_at=9.9)
+    metrics.update(15.0, captured_at=10.8)
+
+    assert metrics.processed_frames == 2
+    assert metrics.inference_latency_total_ms == 20.0
+    assert round(metrics.end_to_end_latency_total_ms, 6) == 300.0
+    assert metrics.inference_latency_ms != metrics.inference_latency_total_ms

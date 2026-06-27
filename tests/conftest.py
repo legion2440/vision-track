@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import cv2
@@ -65,9 +66,10 @@ def synthetic_video(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def fake_engine() -> ProcessingEngine:
+def fake_engine(tmp_path: Path) -> ProcessingEngine:
+    config = replace(load_config(), log_file=str(tmp_path / "app_errors.log"))
     engine = ProcessingEngine(
-        load_config(),
+        config,
         device=DeviceInfo("cpu", "cpu", "CPU", "Fake CPU"),
         detector=FakeDetector(),
     )
@@ -82,4 +84,3 @@ def wait_until(predicate, timeout: float = 5.0) -> bool:
             return True
         time.sleep(0.05)
     return False
-
