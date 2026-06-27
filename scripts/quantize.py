@@ -82,7 +82,7 @@ def main() -> None:
             opset=int(quantization["opset"]),
             simplify=True,
             dynamic=False,
-            nms=True,
+            nms=False,
             device="cpu",
         )
     )
@@ -142,4 +142,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

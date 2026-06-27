@@ -19,6 +19,7 @@ class InferenceResult:
     latency_ms: float
     backend: str
     device: str
+    provider: str | None = None
 
 
 class DetectorBackend(ABC):
@@ -68,6 +69,18 @@ class UltralyticsBackend(DetectorBackend):
 
         self.model = YOLO(self.model_path, task="detect")
 
+    def _actual_torch_device(self) -> str:
+        if self.model is not None:
+            module = getattr(self.model, "model", None)
+            if module is not None:
+                try:
+                    return str(next(module.parameters()).device)
+                except Exception:
+                    pass
+        if self.device.kind == "cuda":
+            return "cuda:0"
+        return self.device.torch_device
+
     def infer_batch(self, frames: Sequence[np.ndarray]) -> list[InferenceResult]:
         if self.model is None:
             self.load()
@@ -104,7 +117,7 @@ class UltralyticsBackend(DetectorBackend):
                     detections=detections,
                     latency_ms=per_frame_ms,
                     backend=self.name,
-                    device=self.device.kind,
+                    device=self._actual_torch_device(),
                 )
             )
         return output
@@ -165,6 +178,25 @@ def nms_detections(detections: Detections, iou_threshold: float) -> Detections:
     )
 
 
+def _looks_like_end_to_end_output(prediction: np.ndarray) -> bool:
+    if prediction.ndim != 2 or prediction.shape[1] != 6:
+        return False
+    class_column = prediction[:, 5]
+    return bool(np.allclose(class_column, np.round(class_column), atol=1e-3))
+
+
+def _orient_onnx_prediction(prediction: np.ndarray) -> np.ndarray:
+    if prediction.shape[1] < 5 <= prediction.shape[0]:
+        return prediction.T
+    if (
+        prediction.shape[0] < prediction.shape[1]
+        and prediction.shape[0] >= 5
+        and not _looks_like_end_to_end_output(prediction)
+    ):
+        return prediction.T
+    return prediction
+
+
 def _postprocess_output(
     raw: np.ndarray,
     info: LetterboxInfo,
@@ -182,17 +214,16 @@ def _postprocess_output(
     if prediction.ndim != 2:
         raise ValueError(f"Unsupported ONNX output shape: {np.asarray(raw).shape}")
 
+    prediction = _orient_onnx_prediction(prediction)
+
     # End-to-end exports commonly return rows [x1, y1, x2, y2, score, class].
-    if prediction.shape[1] == 6:
+    if _looks_like_end_to_end_output(prediction):
         boxes = prediction[:, :4]
         scores = prediction[:, 4]
         class_ids = prediction[:, 5].astype(np.int32)
         mask = (scores >= confidence) & (class_ids == person_class_id)
         boxes, scores, class_ids = boxes[mask], scores[mask], class_ids[mask]
     else:
-        # Classic Ultralytics output is [channels, anchors], transpose when needed.
-        if prediction.shape[0] < prediction.shape[1]:
-            prediction = prediction.T
         if prediction.shape[1] < 5:
             raise ValueError(f"Unsupported ONNX output shape: {np.asarray(raw).shape}")
         boxes = _xywh_to_xyxy(prediction[:, :4])
@@ -255,8 +286,9 @@ class OnnxRuntimeBackend(DetectorBackend):
                 InferenceResult(
                     detections=detections,
                     latency_ms=latency_ms,
-                    backend=f"{self.name}:{self.actual_provider}",
+                    backend=self.name,
                     device="cuda" if self.actual_provider == "CUDAExecutionProvider" else "cpu",
+                    provider=self.actual_provider,
                 )
             )
         return output

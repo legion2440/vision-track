@@ -64,6 +64,9 @@ class StreamContext:
     latest_frame: np.ndarray | None = None
     latest_rendered_frame: np.ndarray | None = None
     latest_detections: Any = None
+    actual_backend: str | None = None
+    actual_device: str | None = None
+    actual_provider: str | None = None
     trajectories: dict[int, list[tuple[int, int]]] = field(default_factory=dict)
     metrics: StreamMetrics = field(default_factory=StreamMetrics)
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
@@ -87,4 +90,3 @@ class StreamContext:
         if detections is None or detections.tracker_id is None:
             return []
         return [(self.stream_id, int(item)) for item in detections.tracker_id]
-

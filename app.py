@@ -17,6 +17,12 @@ from vision_track.detector import available_backends
 from vision_track.engine import ProcessingEngine
 from vision_track.lifecycle import StreamState
 from vision_track.streamlit_state import ENGINE_KEY
+from vision_track.ui import (
+    replay_button_label,
+    runtime_backend_summary,
+    single_stream_column_weights,
+    stream_grid_columns,
+)
 
 
 st.set_page_config(page_title="VisionTrack", page_icon="🎯", layout="wide")
@@ -78,8 +84,8 @@ with st.sidebar:
     backend_name = st.selectbox("Detector backend", backend_choices)
     engine = _engine_for_backend(backend_name)
     st.caption(
-        f"Device: `{engine.device.kind}` · {engine.device.name}\n\n"
-        f"Backend: `{engine.detector.name}`"
+        f"Requested device: `{engine.device.kind}` · {engine.device.name}\n\n"
+        f"Requested backend: `{engine.detector.name}`"
     )
 
     uploads = st.file_uploader(
@@ -111,6 +117,13 @@ with st.sidebar:
 
     if selected_id:
         selected = engine.get(selected_id)
+        st.caption(
+            runtime_backend_summary(
+                selected,
+                requested_backend=engine.detector.name,
+                requested_device=engine.device.kind,
+            )
+        )
         confidence = st.slider(
             "Confidence", 0.05, 0.95, float(selected.options.confidence), 0.05
         )
@@ -170,7 +183,7 @@ with st.sidebar:
             engine.start(selected_id)
         if second.button("Stop", use_container_width=True):
             engine.stop(selected_id)
-        if first.button("Restart", use_container_width=True):
+        if first.button(replay_button_label(selected), use_container_width=True):
             engine.restart(selected_id)
         if second.button("Reset counters", use_container_width=True):
             engine.reset_counters(selected_id)
@@ -194,7 +207,57 @@ def _metric_value(value: float, suffix: str = "") -> str:
     return f"{value:.1f}{suffix}" if value else f"0.0{suffix}"
 
 
-@st.fragment(run_every="500ms")
+def _render_stream_card(context) -> None:
+    st.markdown(f"**{context.source.display_name}**")
+    if context.latest_rendered_frame is not None:
+        st.image(
+            context.latest_rendered_frame,
+            channels="BGR",
+            use_container_width=True,
+        )
+    else:
+        st.caption("Waiting for frames")
+    counter = context.counter
+    st.caption(
+        f"{context.state.value} · FPS {_metric_value(context.metrics.fps)} · "
+        f"inference {_metric_value(context.metrics.inference_latency_ms, ' ms')} · "
+        f"end-to-end {_metric_value(context.metrics.end_to_end_latency_ms, ' ms')} · "
+        f"dropped {context.queue.dropped_rate:.1%} · "
+        f"IN {counter.in_count} · OUT {counter.out_count} · OCC {counter.occupancy}"
+    )
+    if context.error:
+        st.error(context.error)
+
+
+def _render_detail_controls(context) -> None:
+    control_columns = st.columns(4)
+    if control_columns[0].button(
+        "Start",
+        key=f"detail-start-{context.stream_id}",
+        use_container_width=True,
+    ):
+        engine.start(context.stream_id)
+    if control_columns[1].button(
+        "Stop",
+        key=f"detail-stop-{context.stream_id}",
+        use_container_width=True,
+    ):
+        engine.stop(context.stream_id)
+    if control_columns[2].button(
+        replay_button_label(context),
+        key=f"detail-restart-{context.stream_id}",
+        use_container_width=True,
+    ):
+        engine.restart(context.stream_id)
+    if control_columns[3].button(
+        "Reset counters",
+        key=f"detail-reset-{context.stream_id}",
+        use_container_width=True,
+    ):
+        engine.reset_counters(context.stream_id)
+
+
+@st.fragment(run_every="100ms")
 def render_dashboard() -> None:
     current_contexts = engine.contexts()
     if not current_contexts:
@@ -202,35 +265,19 @@ def render_dashboard() -> None:
         return
 
     st.subheader("Streams")
-    columns = st.columns(min(2, len(current_contexts)))
-    for index, context in enumerate(current_contexts):
-        with columns[index % len(columns)]:
-            st.markdown(f"**{context.source.display_name}**")
-            if context.latest_rendered_frame is not None:
-                st.image(
-                    context.latest_rendered_frame,
-                    channels="BGR",
-                    use_container_width=True,
-                )
-            else:
-                st.caption("Waiting for frames")
-            st.caption(
-                f"{context.state.value} · FPS {_metric_value(context.metrics.fps)} · "
-                f"inference {_metric_value(context.metrics.inference_latency_ms, ' ms')} · "
-                f"dropped {context.queue.dropped_rate:.1%}"
-            )
-            if context.error:
-                st.error(context.error)
+    if len(current_contexts) == 1:
+        _, middle, _ = st.columns(single_stream_column_weights(1))
+        with middle:
+            _render_stream_card(current_contexts[0])
+    else:
+        columns = st.columns(stream_grid_columns(len(current_contexts)))
+        for index, context in enumerate(current_contexts):
+            with columns[index % len(columns)]:
+                _render_stream_card(context)
 
     if selected_id and selected_id in [item.stream_id for item in current_contexts]:
         context = engine.get(selected_id)
         st.subheader(f"Details · {context.source.display_name}")
-        if context.latest_rendered_frame is not None:
-            st.image(
-                context.latest_rendered_frame,
-                channels="BGR",
-                use_container_width=True,
-            )
         counter = context.counter
         metric_columns = st.columns(8)
         metric_columns[0].metric("Status", context.state.value)
@@ -246,9 +293,14 @@ def render_dashboard() -> None:
         metric_columns[6].metric("Out", counter.out_count)
         metric_columns[7].metric("Occupancy", counter.occupancy)
         st.caption(
-            f"Device `{engine.device.kind}` · backend `{engine.detector.name}` · "
-            f"source `{context.source.source_type.value}`"
+            runtime_backend_summary(
+                context,
+                requested_backend=engine.detector.name,
+                requested_device=engine.device.kind,
+            )
+            + f" · source `{context.source.source_type.value}`"
         )
+        _render_detail_controls(context)
 
 
 render_dashboard()

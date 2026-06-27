@@ -68,8 +68,9 @@ class SharedInferenceScheduler:
 
     def _take_batch(self) -> list[tuple[StreamContext, FramePacket]]:
         batch: list[tuple[StreamContext, FramePacket]] = []
-        deadline = time.perf_counter() + self.max_batch_wait_ms / 1000.0
-        while len(batch) < self.max_batch_size:
+        seen_streams: set[str] = set()
+        deadline: float | None = None
+        while len(batch) < self.max_batch_size and not self._stop_event.is_set():
             added = False
             for context in self.contexts_provider():
                 if len(batch) >= self.max_batch_size:
@@ -78,16 +79,26 @@ class SharedInferenceScheduler:
                 # its final queued frame. EOF therefore remains drainable.
                 if context.state not in {StreamState.ACTIVE, StreamState.EOF}:
                     continue
-                if any(existing.stream_id == context.stream_id for existing, _ in batch):
+                if context.stream_id in seen_streams:
                     continue
                 try:
                     batch.append((context, context.queue.get_nowait()))
+                    seen_streams.add(context.stream_id)
                     added = True
+                    if deadline is None:
+                        deadline = time.perf_counter() + self.max_batch_wait_ms / 1000.0
                 except queue.Empty:
                     continue
-            if batch and (time.perf_counter() >= deadline or not added):
-                break
             if not batch and not added:
+                break
+            if len(batch) >= self.max_batch_size:
+                break
+            if deadline is None:
+                continue
+            remaining = deadline - time.perf_counter()
+            if remaining <= 0:
+                break
+            if self._stop_event.wait(min(self.idle_seconds, remaining)):
                 break
         return batch
 
@@ -133,6 +144,9 @@ class SharedInferenceScheduler:
             context.latest_frame = packet.frame
             context.latest_rendered_frame = rendered
             context.latest_detections = detections
+            context.actual_backend = result.backend
+            context.actual_device = result.device
+            context.actual_provider = result.provider
             context.metrics.update(result.latency_ms, packet.captured_at)
 
     def _run(self) -> None:
@@ -170,7 +184,8 @@ class SharedInferenceScheduler:
                             Detections.empty(),
                             0.0,
                             self.detector.name,
-                            self.detector.device.kind,
+                            self.detector.device.torch_device,
+                            getattr(self.detector, "actual_provider", None) or None,
                         ),
                     )
                     try:

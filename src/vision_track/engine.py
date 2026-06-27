@@ -84,6 +84,42 @@ class ProcessingEngine:
         cfg = self.config.counting
         return ZoneGeometry(cfg.line_start, cfg.line_end, cfg.polygon)
 
+    def _is_clean_context(self, context: StreamContext) -> bool:
+        return (
+            context.metrics.processed_frames == 0
+            and context.latest_frame is None
+            and context.latest_rendered_frame is None
+            and context.latest_detections is None
+            and context.error is None
+            and context.queue.received == 0
+            and context.state in {StreamState.CREATED, StreamState.STOPPED}
+        )
+
+    def _reset_context_runtime(
+        self,
+        context: StreamContext,
+        *,
+        source: VideoSource | None = None,
+        state: StreamState = StreamState.CREATED,
+    ) -> None:
+        with context.lock:
+            if source is not None:
+                context.source = source
+            context.reader = None
+            context.queue.clear(reset_stats=True)
+            context.tracker = StreamTracker(self._tracker_settings())
+            context.counter = ZoneCounter(self._zone_geometry())
+            context.metrics = type(context.metrics)()
+            context.latest_frame = None
+            context.latest_rendered_frame = None
+            context.latest_detections = None
+            context.trajectories.clear()
+            context.actual_backend = None
+            context.actual_device = None
+            context.actual_provider = None
+            context.error = None
+            context.force_state(state)
+
     def add_stream(
         self,
         source: VideoSource | str,
@@ -127,6 +163,8 @@ class ProcessingEngine:
         with context.lock:
             if context.reader and context.reader.running:
                 return
+            if not self._is_clean_context(context):
+                self._reset_context_runtime(context)
             context.reader = self._build_reader(context)
             context.error = None
         self.scheduler.start()
@@ -142,13 +180,7 @@ class ProcessingEngine:
     def restart(self, stream_id: str) -> None:
         self.stop(stream_id)
         context = self.get(stream_id)
-        context.queue.clear()
-        context.tracker.reset()
-        context.counter.reset()
-        context.metrics = type(context.metrics)()
-        context.latest_frame = None
-        context.latest_rendered_frame = None
-        context.latest_detections = None
+        self._reset_context_runtime(context)
         self.start(stream_id)
 
     def remove(self, stream_id: str) -> None:
@@ -161,18 +193,7 @@ class ProcessingEngine:
         self.stop(stream_id)
         context = self.get(stream_id)
         source_obj = source if isinstance(source, VideoSource) else VideoSource.from_uri(source)
-        with context.lock:
-            context.source = source_obj
-            context.reader = None
-            context.queue.clear()
-            context.tracker.reset()
-            context.counter.reset()
-            context.metrics = type(context.metrics)()
-            context.latest_frame = None
-            context.latest_rendered_frame = None
-            context.latest_detections = None
-            context.error = None
-            context.force_state(StreamState.CREATED)
+        self._reset_context_runtime(context, source=source_obj)
 
     def reset_counters(self, stream_id: str) -> None:
         self.get(stream_id).counter.reset()

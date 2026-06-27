@@ -45,7 +45,6 @@ class ZoneCounter:
         self.in_count = 0
         self.out_count = 0
         self.occupancy = 0
-        self._counted_events: set[tuple[int, str]] = set()
 
     def _ensure_zones(self, frame_shape: tuple[int, int]) -> None:
         if self.frame_shape == frame_shape and self.line_zone is not None:
@@ -61,10 +60,7 @@ class ZoneCounter:
         )
         self.polygon_zone = sv.PolygonZone(polygon=polygon)
         self.frame_shape = frame_shape
-        self.in_count = 0
-        self.out_count = 0
         self.occupancy = 0
-        self._counted_events.clear()
 
     def update(
         self,
@@ -79,13 +75,10 @@ class ZoneCounter:
         crossed_in, crossed_out = self.line_zone.trigger(sv_detections)
         self.polygon_zone.trigger(sv_detections)
         self.occupancy = int(self.polygon_zone.current_count)
-        for index, tracker_id in enumerate(detections.tracker_id):
-            tracker_id = int(tracker_id)
-            if crossed_in[index] and (tracker_id, "in") not in self._counted_events:
-                self._counted_events.add((tracker_id, "in"))
+        for index in range(len(detections)):
+            if crossed_in[index]:
                 self.in_count += 1
-            if crossed_out[index] and (tracker_id, "out") not in self._counted_events:
-                self._counted_events.add((tracker_id, "out"))
+            if crossed_out[index]:
                 self.out_count += 1
         return crossed_in, crossed_out
 
@@ -96,24 +89,9 @@ class ZoneCounter:
         self.in_count = 0
         self.out_count = 0
         self.occupancy = 0
-        self._counted_events.clear()
 
     def reset_tracking_state(self) -> None:
         """Reset tracker-dependent zone history while preserving totals."""
         totals = self.in_count, self.out_count
         self.reset()
         self.in_count, self.out_count = totals
-
-
-class CrossingGuard:
-    """Small testable duplicate-event guard used by ZoneCounter."""
-
-    def __init__(self) -> None:
-        self.events: set[tuple[int, str]] = set()
-
-    def record(self, tracker_id: int, direction: str) -> bool:
-        event = (int(tracker_id), direction)
-        if event in self.events:
-            return False
-        self.events.add(event)
-        return True

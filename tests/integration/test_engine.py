@@ -3,9 +3,11 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from vision_track.lifecycle import StreamState
+from vision_track.queues import FramePacket
 
 
 pytestmark = pytest.mark.integration
@@ -80,3 +82,57 @@ def test_stop_restart_remove_and_replace(
     assert fake_engine.get(first).source.uri == str(synthetic_video)
     fake_engine.remove(second)
     assert second not in [context.stream_id for context in fake_engine.contexts()]
+
+
+def test_start_after_eof_replays_from_clean_state(fake_engine, synthetic_video: Path, monkeypatch) -> None:
+    stream_id = fake_engine.add_stream(str(synthetic_video))
+    context = fake_engine.get(stream_id)
+    original_tracker = context.tracker
+    original_counter = context.counter
+    context.force_state(StreamState.EOF)
+    context.queue.put(
+        FramePacket(
+            frame=np.zeros((4, 4, 3), dtype=np.uint8),
+            frame_index=9,
+            captured_at=1.0,
+        )
+    )
+    context.counter.in_count = 5
+    context.metrics.processed_frames = 12
+    context.latest_frame = np.zeros((4, 4, 3), dtype=np.uint8)
+    context.latest_rendered_frame = np.zeros((4, 4, 3), dtype=np.uint8)
+    context.latest_detections = object()
+    context.actual_backend = "onnxruntime"
+    context.actual_device = "cpu"
+    context.actual_provider = "CPUExecutionProvider"
+    context.error = "previous failure"
+
+    class NoopReader:
+        running = False
+        started = False
+
+        def start(self):
+            self.started = True
+
+        def stop(self, timeout=3.0):
+            pass
+
+    reader = NoopReader()
+    monkeypatch.setattr(fake_engine, "_build_reader", lambda _context: reader)
+
+    fake_engine.start(stream_id)
+
+    assert reader.started
+    assert context.state is StreamState.CREATED
+    assert context.queue.received == 0
+    assert context.metrics.processed_frames == 0
+    assert context.latest_frame is None
+    assert context.latest_rendered_frame is None
+    assert context.latest_detections is None
+    assert context.actual_backend is None
+    assert context.actual_device is None
+    assert context.actual_provider is None
+    assert context.error is None
+    assert context.tracker is not original_tracker
+    assert context.counter is not original_counter
+    assert context.counter.in_count == 0

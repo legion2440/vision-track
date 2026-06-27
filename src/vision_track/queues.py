@@ -49,15 +49,17 @@ class LatestFrameQueue:
     def empty(self) -> bool:
         return self._queue.empty()
 
-    def clear(self) -> None:
+    def clear(self, *, reset_stats: bool = False) -> None:
         with self._lock:
             while True:
                 try:
                     self._queue.get_nowait()
                 except queue.Empty:
                     break
+            if reset_stats:
+                self.received = 0
+                self.dropped = 0
 
     @property
     def dropped_rate(self) -> float:
         return self.dropped / self.received if self.received else 0.0
-

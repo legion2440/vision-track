@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import threading
 from pathlib import Path
 from time import perf_counter
@@ -12,6 +13,45 @@ from .lifecycle import StreamState
 from .logging_utils import log_stream_error
 from .queues import FramePacket, LatestFrameQueue
 from .sources import SourceType, VideoSource
+
+
+DEFAULT_LOCAL_FPS = 30.0
+MAX_REASONABLE_FPS = 240.0
+LOCAL_READ_RETRIES = 3
+LOCAL_RETRY_WAIT_SECONDS = 0.01
+
+
+def _safe_capture_value(capture: cv2.VideoCapture, prop: int) -> float | None:
+    try:
+        value = float(capture.get(prop))
+    except Exception:
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _normalized_fps(value: float | None) -> float:
+    if value is None or not math.isfinite(value):
+        return DEFAULT_LOCAL_FPS
+    if value <= 0 or value > MAX_REASONABLE_FPS:
+        return DEFAULT_LOCAL_FPS
+    return float(value)
+
+
+def _valid_timestamp_ms(value: float | None, previous: float | None) -> float | None:
+    if value is None or not math.isfinite(value) or value < 0:
+        return None
+    if previous is not None and value <= previous:
+        return None
+    return float(value)
+
+
+def _local_read_is_eof(capture: cv2.VideoCapture, frames_read: int) -> bool:
+    frame_count = _safe_capture_value(capture, cv2.CAP_PROP_FRAME_COUNT)
+    if frame_count is None or frame_count <= 0:
+        return frames_read > 0
+    current_position = _safe_capture_value(capture, cv2.CAP_PROP_POS_FRAMES)
+    position = current_position if current_position is not None else float(frames_read)
+    return frames_read >= int(frame_count) or position >= frame_count
 
 
 class VideoReader:
@@ -26,6 +66,7 @@ class VideoReader:
         logger: logging.Logger,
         reconnect_attempts: int = 5,
         reconnect_backoff_seconds: float = 1.0,
+        clock: Callable[[], float] = perf_counter,
     ) -> None:
         self.stream_id = stream_id
         self.source = source
@@ -35,6 +76,7 @@ class VideoReader:
         self.logger = logger
         self.reconnect_attempts = max(0, reconnect_attempts)
         self.reconnect_backoff_seconds = max(0.0, reconnect_backoff_seconds)
+        self._clock = clock
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._capture: cv2.VideoCapture | None = None
@@ -75,6 +117,21 @@ class VideoReader:
             raise OSError(f"Unable to open video source: {self.source.safe_uri}")
         return capture
 
+    def _wait_for_local_presentation(
+        self,
+        *,
+        playback_origin: float,
+        target_seconds: float,
+    ) -> bool:
+        target = playback_origin + target_seconds
+        while not self._stop_event.is_set():
+            remaining = target - self._clock()
+            if remaining <= 0:
+                return True
+            if self._stop_event.wait(min(remaining, 0.05)):
+                return False
+        return False
+
     def _run(self) -> None:
         frame_index = 0
         attempt = 0
@@ -82,25 +139,60 @@ class VideoReader:
         while not self._stop_event.is_set():
             try:
                 self._capture = self._open()
+                source_fps = _normalized_fps(
+                    _safe_capture_value(self._capture, cv2.CAP_PROP_FPS)
+                )
+                previous_timestamp_ms: float | None = None
+                playback_origin: float | None = None
+                local_failures = 0
                 self.error_callback(None)
                 self.state_callback(StreamState.ACTIVE)
                 attempt = 0
                 while not self._stop_event.is_set():
                     ok, frame = self._capture.read()
                     if not ok or frame is None:
+                        if self._stop_event.is_set():
+                            break
                         if self.source.source_type is SourceType.LOCAL:
-                            self.state_callback(StreamState.EOF)
-                            return
+                            if _local_read_is_eof(self._capture, frame_index):
+                                self.state_callback(StreamState.EOF)
+                                return
+                            local_failures += 1
+                            if local_failures <= LOCAL_READ_RETRIES:
+                                if self._stop_event.wait(LOCAL_RETRY_WAIT_SECONDS):
+                                    break
+                                continue
+                            raise OSError(
+                                "Decode failure before end of local video: "
+                                f"{self.source.safe_uri}"
+                            )
                         raise OSError(
                             f"Decoder/read failure for source: {self.source.safe_uri}"
                         )
-                    timestamp = self._capture.get(cv2.CAP_PROP_POS_MSEC)
+                    local_failures = 0
+                    timestamp = _valid_timestamp_ms(
+                        _safe_capture_value(self._capture, cv2.CAP_PROP_POS_MSEC),
+                        previous_timestamp_ms,
+                    )
+                    if timestamp is not None:
+                        previous_timestamp_ms = timestamp
+                    target_seconds = (
+                        timestamp / 1000.0 if timestamp is not None else frame_index / source_fps
+                    )
+                    if self.source.source_type is SourceType.LOCAL:
+                        if playback_origin is None:
+                            playback_origin = self._clock() - target_seconds
+                        elif not self._wait_for_local_presentation(
+                            playback_origin=playback_origin,
+                            target_seconds=target_seconds,
+                        ):
+                            break
                     self.frame_queue.put(
                         FramePacket(
                             frame=frame,
                             frame_index=frame_index,
-                            captured_at=perf_counter(),
-                            source_timestamp_ms=timestamp if timestamp >= 0 else None,
+                            captured_at=self._clock(),
+                            source_timestamp_ms=timestamp,
                         )
                     )
                     frame_index += 1
@@ -133,4 +225,3 @@ class VideoReader:
                     self._capture.release()
                     self._capture = None
         self.state_callback(StreamState.STOPPED)
-
