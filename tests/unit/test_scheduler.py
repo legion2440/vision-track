@@ -55,11 +55,12 @@ class ScriptedQueue:
         return self.packets.pop(0)
 
 
-def _packet(index: int) -> FramePacket:
+def _packet(index: int, runtime_generation: int = 0) -> FramePacket:
     return FramePacket(
         frame=np.zeros((4, 4, 3), dtype=np.uint8),
         frame_index=index,
         captured_at=0.0,
+        runtime_generation=runtime_generation,
     )
 
 
@@ -150,3 +151,86 @@ def test_finalize_persists_actual_backend_device_and_provider(monkeypatch) -> No
     assert context.actual_backend == "onnxruntime"
     assert context.actual_device == "cpu"
     assert context.actual_provider == "CPUExecutionProvider"
+
+
+def test_take_batch_round_robins_six_ready_streams_across_three_batches(
+    monkeypatch,
+) -> None:
+    clock = FakeClock()
+    contexts = [
+        _context(
+            f"stream-{index}",
+            ScriptedQueue([_packet(index * 10 + offset) for offset in range(3)]),
+        )
+        for index in range(6)
+    ]
+    scheduler = _scheduler(contexts, clock, FakeStopEvent(clock), monkeypatch)
+
+    batches = [scheduler._take_batch() for _ in range(3)]
+    selected = [
+        context.stream_id
+        for batch in batches
+        for context, _packet_item in batch
+    ]
+
+    assert selected == [f"stream-{index}" for index in range(6)]
+    for batch in batches:
+        stream_ids = [context.stream_id for context, _packet_item in batch]
+        assert len(stream_ids) == len(set(stream_ids))
+
+
+def test_take_batch_cursor_remains_valid_after_removing_stream(monkeypatch) -> None:
+    clock = FakeClock()
+    contexts = [
+        _context(f"stream-{index}", ScriptedQueue([_packet(index)]))
+        for index in range(4)
+    ]
+    scheduler = _scheduler(contexts, clock, FakeStopEvent(clock), monkeypatch)
+    scheduler._cursor = 3
+    contexts.pop(1)
+
+    scheduler._take_batch()
+
+    assert 0 <= scheduler._cursor < len(contexts)
+
+
+def test_take_batch_cursor_remains_valid_after_adding_stream(monkeypatch) -> None:
+    clock = FakeClock()
+    contexts = [
+        _context(f"stream-{index}", ScriptedQueue([_packet(index)]))
+        for index in range(2)
+    ]
+    scheduler = _scheduler(contexts, clock, FakeStopEvent(clock), monkeypatch)
+    scheduler._take_batch()
+    contexts.append(_context("stream-added", ScriptedQueue([_packet(99)])))
+
+    scheduler._take_batch()
+
+    assert 0 <= scheduler._cursor < len(contexts)
+
+
+def test_take_batch_empty_queues_respect_batch_wait(monkeypatch) -> None:
+    clock = FakeClock()
+    contexts = [
+        _context("first", ScriptedQueue()),
+        _context("second", ScriptedQueue()),
+    ]
+    stop_event = FakeStopEvent(clock)
+    scheduler = _scheduler(contexts, clock, stop_event, monkeypatch)
+
+    batch = scheduler._take_batch()
+
+    assert batch == []
+    assert clock.now >= 0.01
+    assert stop_event.waits
+
+
+def test_take_batch_drains_final_frame_from_eof_stream(monkeypatch) -> None:
+    clock = FakeClock()
+    context = _context("final", ScriptedQueue([_packet(1)]))
+    context.force_state(StreamState.EOF)
+    scheduler = _scheduler([context], clock, FakeStopEvent(clock), monkeypatch)
+
+    batch = scheduler._take_batch()
+
+    assert [item[0].stream_id for item in batch] == ["final"]

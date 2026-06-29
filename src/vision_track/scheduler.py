@@ -36,6 +36,7 @@ class SharedInferenceScheduler:
         self._thread: threading.Thread | None = None
         self._loaded = False
         self._lock = threading.Lock()
+        self._cursor = 0
 
     @property
     def running(self) -> bool:
@@ -69,78 +70,107 @@ class SharedInferenceScheduler:
     def _take_batch(self) -> list[tuple[StreamContext, FramePacket]]:
         batch: list[tuple[StreamContext, FramePacket]] = []
         seen_streams: set[str] = set()
-        deadline: float | None = None
+        deadline = time.perf_counter() + self.max_batch_wait_ms / 1000.0
+        last_considered: int | None = None
         while len(batch) < self.max_batch_size and not self._stop_event.is_set():
             added = False
-            for context in self.contexts_provider():
+            contexts = self.contexts_provider()
+            if not contexts:
+                self._cursor = 0
+                break
+            start = self._cursor % len(contexts)
+            for offset in range(len(contexts)):
                 if len(batch) >= self.max_batch_size:
                     break
+                index = (start + offset) % len(contexts)
+                last_considered = index
+                context = contexts[index]
                 # A fast local reader can reach EOF before the scheduler consumes
                 # its final queued frame. EOF therefore remains drainable.
-                if context.state not in {StreamState.ACTIVE, StreamState.EOF}:
+                with context.lock:
+                    stream_id = context.stream_id
+                    state = context.state
+                if state not in {StreamState.ACTIVE, StreamState.EOF}:
                     continue
-                if context.stream_id in seen_streams:
+                if stream_id in seen_streams:
                     continue
                 try:
-                    batch.append((context, context.queue.get_nowait()))
-                    seen_streams.add(context.stream_id)
+                    packet = context.queue.get_nowait()
+                    with context.lock:
+                        if (
+                            context.state not in {StreamState.ACTIVE, StreamState.EOF}
+                            or packet.runtime_generation != context.runtime_generation
+                        ):
+                            continue
+                    batch.append((context, packet))
+                    seen_streams.add(stream_id)
                     added = True
-                    if deadline is None:
-                        deadline = time.perf_counter() + self.max_batch_wait_ms / 1000.0
                 except queue.Empty:
                     continue
             if not batch and not added:
-                break
+                pass
             if len(batch) >= self.max_batch_size:
                 break
-            if deadline is None:
-                continue
             remaining = deadline - time.perf_counter()
             if remaining <= 0:
                 break
             if self._stop_event.wait(min(self.idle_seconds, remaining)):
                 break
+        current_count = len(self.contexts_provider())
+        if current_count == 0:
+            self._cursor = 0
+        elif last_considered is not None:
+            self._cursor = (last_considered + 1) % current_count
+        else:
+            self._cursor %= current_count
         return batch
+
+    @staticmethod
+    def _packet_is_current(context: StreamContext, packet: FramePacket) -> bool:
+        with context.lock:
+            return packet.runtime_generation == context.runtime_generation
 
     def _finalize(
         self,
         context: StreamContext,
         packet: FramePacket,
         result: InferenceResult,
-    ) -> None:
-        detections = result.detections
-        if not context.options.detection_enabled:
-            detections = Detections.empty()
-        else:
-            detections = detections.filter(confidence=context.options.confidence)
-            detections = nms_detections(detections, context.options.iou)
-
-        if context.options.tracking_enabled and context.tracker is not None:
-            detections = context.tracker.update(detections)
-        if (
-            context.options.counting_enabled
-            and context.options.tracking_enabled
-            and context.counter is not None
-        ):
-            context.counter.update(detections, packet.frame.shape[:2])
-
-        in_count = context.counter.in_count if context.counter else 0
-        out_count = context.counter.out_count if context.counter else 0
-        occupancy = context.counter.occupancy if context.counter else 0
-        trajectories = context.tracker.trajectories if context.tracker else {}
-        rendered = render_frame(
-            packet.frame,
-            detections,
-            trajectories=trajectories,
-            geometry=context.counter.geometry if context.counter else None,
-            in_count=in_count,
-            out_count=out_count,
-            occupancy=occupancy,
-            show_detections=context.options.detection_enabled,
-            show_tracking=context.options.tracking_enabled,
-            show_counting=context.options.counting_enabled,
-        )
+    ) -> bool:
         with context.lock:
+            if packet.runtime_generation != context.runtime_generation:
+                return False
+            detections = result.detections
+            if not context.options.detection_enabled:
+                detections = Detections.empty()
+            else:
+                detections = detections.filter(confidence=context.options.confidence)
+                detections = nms_detections(detections, context.options.iou)
+
+            if context.options.tracking_enabled and context.tracker is not None:
+                detections = context.tracker.update(detections)
+            if (
+                context.options.counting_enabled
+                and context.options.tracking_enabled
+                and context.counter is not None
+            ):
+                context.counter.update(detections, packet.frame.shape[:2])
+
+            in_count = context.counter.in_count if context.counter else 0
+            out_count = context.counter.out_count if context.counter else 0
+            occupancy = context.counter.occupancy if context.counter else 0
+            trajectories = context.tracker.trajectories if context.tracker else {}
+            rendered = render_frame(
+                packet.frame,
+                detections,
+                trajectories=trajectories,
+                geometry=context.counter.geometry if context.counter else None,
+                in_count=in_count,
+                out_count=out_count,
+                occupancy=occupancy,
+                show_detections=context.options.detection_enabled,
+                show_tracking=context.options.tracking_enabled,
+                show_counting=context.options.counting_enabled,
+            )
             context.latest_frame = packet.frame
             context.latest_rendered_frame = rendered
             context.latest_detections = detections
@@ -148,6 +178,8 @@ class SharedInferenceScheduler:
             context.actual_device = result.device
             context.actual_provider = result.provider
             context.metrics.update(result.latency_ms, packet.captured_at)
+            context.error = None
+            return True
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
@@ -156,10 +188,18 @@ class SharedInferenceScheduler:
                 self._stop_event.wait(self.idle_seconds)
                 continue
             try:
+                batch = [
+                    (context, packet)
+                    for context, packet in batch
+                    if self._packet_is_current(context, packet)
+                ]
+                if not batch:
+                    continue
                 detection_contexts = [
                     (context, packet)
                     for context, packet in batch
                     if context.options.detection_enabled
+                    and self._packet_is_current(context, packet)
                 ]
                 result_by_stream: dict[str, InferenceResult] = {}
                 if detection_contexts:
@@ -178,6 +218,8 @@ class SharedInferenceScheduler:
                         for (context, _), result in zip(detection_contexts, results)
                     }
                 for context, packet in batch:
+                    if not self._packet_is_current(context, packet):
+                        continue
                     result = result_by_stream.get(
                         context.stream_id,
                         InferenceResult(
@@ -190,24 +232,33 @@ class SharedInferenceScheduler:
                     )
                     try:
                         self._finalize(context, packet, result)
-                        context.set_error(None)
                     except Exception as exc:
-                        context.set_error(str(exc))
+                        with context.lock:
+                            if packet.runtime_generation != context.runtime_generation:
+                                continue
+                            context.error = str(exc)
+                            state = context.state.value
+                            source_type = context.source.source_type.value
                         log_stream_error(
                             self.logger,
                             stream_id=context.stream_id,
-                            source_type=context.source.source_type.value,
-                            state=context.state.value,
+                            source_type=source_type,
+                            state=state,
                             exc=exc,
                         )
             except Exception as exc:
-                for context, _ in batch:
-                    context.set_error(str(exc))
+                for context, packet in batch:
+                    with context.lock:
+                        if packet.runtime_generation != context.runtime_generation:
+                            continue
+                        context.error = str(exc)
+                        state = context.state.value
+                        source_type = context.source.source_type.value
                     log_stream_error(
                         self.logger,
                         stream_id=context.stream_id,
-                        source_type=context.source.source_type.value,
-                        state=context.state.value,
+                        source_type=source_type,
+                        state=state,
                         exc=exc,
                     )
                 self._stop_event.wait(0.25)

@@ -95,6 +95,10 @@ class ProcessingEngine:
             and context.state in {StreamState.CREATED, StreamState.STOPPED}
         )
 
+    def _invalidate_context_runtime(self, context: StreamContext) -> None:
+        with context.lock:
+            context.runtime_generation += 1
+
     def _reset_context_runtime(
         self,
         context: StreamContext,
@@ -103,6 +107,7 @@ class ProcessingEngine:
         state: StreamState = StreamState.CREATED,
     ) -> None:
         with context.lock:
+            context.runtime_generation += 1
             if source is not None:
                 context.source = source
             context.reader = None
@@ -156,6 +161,7 @@ class ProcessingEngine:
             logger=self.logger,
             reconnect_attempts=self.config.runtime.reconnect_attempts,
             reconnect_backoff_seconds=self.config.runtime.reconnect_backoff_seconds,
+            runtime_generation=context.runtime_generation,
         )
 
     def start(self, stream_id: str) -> None:
@@ -172,7 +178,9 @@ class ProcessingEngine:
 
     def stop(self, stream_id: str) -> None:
         context = self.get(stream_id)
-        reader = context.reader
+        with context.lock:
+            context.runtime_generation += 1
+            reader = context.reader
         if reader:
             reader.stop()
         context.force_state(StreamState.STOPPED)
@@ -223,7 +231,9 @@ class ProcessingEngine:
             return
         self._shutdown = True
         for context in self.contexts():
-            reader = context.reader
+            with context.lock:
+                context.runtime_generation += 1
+                reader = context.reader
             if reader:
                 reader.stop()
             context.force_state(StreamState.STOPPED)

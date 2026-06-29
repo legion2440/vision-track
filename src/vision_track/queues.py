@@ -13,6 +13,7 @@ class FramePacket:
     frame: np.ndarray
     frame_index: int
     captured_at: float
+    runtime_generation: int = 0
     source_timestamp_ms: float | None = None
 
     @classmethod
@@ -21,8 +22,15 @@ class FramePacket:
         frame: np.ndarray,
         frame_index: int,
         source_timestamp_ms: float | None = None,
+        runtime_generation: int = 0,
     ) -> "FramePacket":
-        return cls(frame, frame_index, perf_counter(), source_timestamp_ms)
+        return cls(
+            frame=frame,
+            frame_index=frame_index,
+            captured_at=perf_counter(),
+            runtime_generation=runtime_generation,
+            source_timestamp_ms=source_timestamp_ms,
+        )
 
 
 class LatestFrameQueue:

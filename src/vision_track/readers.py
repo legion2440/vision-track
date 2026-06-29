@@ -49,10 +49,11 @@ def _local_read_is_eof(capture: cv2.VideoCapture, frames_read: int) -> bool:
     frame_count = _safe_capture_value(capture, cv2.CAP_PROP_FRAME_COUNT)
     if frame_count is not None and frame_count > 0:
         current_position = _safe_capture_value(capture, cv2.CAP_PROP_POS_FRAMES)
-        if current_position is not None and current_position >= frame_count - 1:
+        if current_position is not None and current_position >= frame_count:
             return True
         if frames_read >= int(frame_count):
             return True
+        return False
     ratio = _safe_capture_value(capture, cv2.CAP_PROP_POS_AVI_RATIO)
     return ratio is not None and ratio >= 0.99
 
@@ -69,6 +70,7 @@ class VideoReader:
         logger: logging.Logger,
         reconnect_attempts: int = 5,
         reconnect_backoff_seconds: float = 1.0,
+        runtime_generation: int = 0,
         clock: Callable[[], float] = perf_counter,
     ) -> None:
         self.stream_id = stream_id
@@ -79,6 +81,7 @@ class VideoReader:
         self.logger = logger
         self.reconnect_attempts = max(0, reconnect_attempts)
         self.reconnect_backoff_seconds = max(0.0, reconnect_backoff_seconds)
+        self.runtime_generation = runtime_generation
         self._clock = clock
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -198,6 +201,7 @@ class VideoReader:
                             frame=frame,
                             frame_index=frame_index,
                             captured_at=self._clock(),
+                            runtime_generation=self.runtime_generation,
                             source_timestamp_ms=timestamp,
                         )
                     )

@@ -75,21 +75,29 @@ def run_scenario(
         backend.load()
         for _ in range(warmup_frames):
             backend.infer_batch([stream.read() for stream in streams])
-        inference_latencies: list[float] = []
-        end_to_end_latencies: list[float] = []
-        started = time.perf_counter()
+        batch_inference_latencies: list[float] = []
+        backend_reported_latencies: list[float] = []
+        total_inference_seconds = 0.0
+        results = []
         for _ in range(measured_frames):
-            frame_started = time.perf_counter()
-            results = backend.infer_batch([stream.read() for stream in streams])
-            end_to_end_latencies.append(
-                (time.perf_counter() - frame_started) * 1000.0 / len(streams)
-            )
-            inference_latencies.extend(result.latency_ms for result in results)
-        elapsed = time.perf_counter() - started
-        aggregate_fps = measured_frames * len(streams) / elapsed
+            frames = [stream.read() for stream in streams]
+            inference_started = time.perf_counter()
+            results = backend.infer_batch(frames)
+            inference_seconds = time.perf_counter() - inference_started
+            total_inference_seconds += inference_seconds
+            batch_inference_latencies.append(inference_seconds * 1000.0)
+            backend_reported_latencies.extend(result.latency_ms for result in results)
+        aggregate_fps = (
+            measured_frames * len(streams) / total_inference_seconds
+            if total_inference_seconds > 0
+            else 0.0
+        )
         return {
             "name": name,
             "status": "ok",
+            "measurement_scope": (
+                "detector inference only; decoded and resized frames supplied before timing"
+            ),
             "model": str(model_path),
             "backend": backend_name,
             "actual_backend": results[0].backend,
@@ -101,8 +109,8 @@ def run_scenario(
             "image_size": image_size,
             "warmup_frames": warmup_frames,
             "measured_frames": measured_frames,
-            "inference_latency_ms": statistics.fmean(inference_latencies),
-            "end_to_end_latency_ms": statistics.fmean(end_to_end_latencies),
+            "batch_inference_latency_ms": statistics.fmean(batch_inference_latencies),
+            "backend_reported_latency_ms": statistics.fmean(backend_reported_latencies),
             "aggregate_fps": aggregate_fps,
             "fps_per_stream": aggregate_fps / len(streams),
         }
@@ -183,7 +191,7 @@ def prepare_resized_video(
     return destination
 
 
-def _snapshot_context(context) -> dict[str, float | int]:
+def _snapshot_context(context) -> dict[str, object]:
     with context.lock:
         return {
             "processed_frames": context.metrics.processed_frames,
@@ -191,6 +199,11 @@ def _snapshot_context(context) -> dict[str, float | int]:
             "end_to_end_latency_total_ms": context.metrics.end_to_end_latency_total_ms,
             "queue_received": context.queue.received,
             "queue_dropped": context.queue.dropped,
+            "state": context.state.value,
+            "actual_backend": context.actual_backend,
+            "actual_device": context.actual_device,
+            "actual_provider": context.actual_provider,
+            "error": context.error,
         }
 
 
@@ -202,9 +215,103 @@ def _divide_or_zero(numerator: float, denominator: float) -> float:
     return numerator / denominator if denominator > 0 else 0.0
 
 
+def _readiness_record(context) -> dict[str, object]:
+    with context.lock:
+        return {
+            "stream_id": context.stream_id,
+            "state": context.state.value,
+            "processed_frames": context.metrics.processed_frames,
+            "actual_backend": context.actual_backend,
+            "actual_device": context.actual_device,
+            "actual_provider": context.actual_provider,
+            "error": context.error,
+        }
+
+
+def _wait_for_primary_readiness(
+    engine: ProcessingEngine,
+    stream_ids: list[str],
+    startup_timeout_seconds: float,
+) -> tuple[bool, str | None, list[dict[str, object]]]:
+    deadline = time.perf_counter() + startup_timeout_seconds
+    records: list[dict[str, object]] = []
+    while True:
+        records = [_readiness_record(engine.get(stream_id)) for stream_id in stream_ids]
+        failed = [record for record in records if record["state"] == StreamState.FAILED.value]
+        if failed:
+            return False, "Primary stream failed before startup readiness", failed
+        eof = [record for record in records if record["state"] == StreamState.EOF.value]
+        if eof:
+            return False, "Primary stream reached EOF before startup readiness", eof
+        if all(
+            int(record["processed_frames"]) > 0
+            and record["actual_backend"] is not None
+            and record["actual_device"] is not None
+            for record in records
+        ):
+            return True, None, records
+        if time.perf_counter() >= deadline:
+            break
+        time.sleep(0.05)
+    return (
+        False,
+        f"Startup readiness timeout after {startup_timeout_seconds:.1f}s",
+        records,
+    )
+
+
+def _primary_failure_payload(
+    *,
+    name: str,
+    reason: str,
+    model_path: Path,
+    backend_name: str,
+    stream_count: int,
+    resolution: tuple[int, int],
+    failed_streams: list[dict[str, object]] | None = None,
+    per_stream: dict[str, dict[str, object]] | None = None,
+) -> dict:
+    payload = {
+        "name": name,
+        "status": "failed",
+        "reason": reason,
+        "model": str(model_path),
+        "backend": backend_name,
+        "streams": stream_count,
+        "resolution": list(resolution),
+    }
+    if failed_streams is not None:
+        payload["failed_streams"] = failed_streams
+    if per_stream is not None:
+        payload["per_stream"] = per_stream
+    return payload
+
+
+def _primary_stream_failures(window: dict) -> list[dict[str, object]]:
+    failures: list[dict[str, object]] = []
+    for stream_id, item in window["per_stream"].items():
+        if (
+            item["processed_frames"] <= 0
+            or item["actual_backend"] is None
+            or item["actual_device"] is None
+        ):
+            failures.append(
+                {
+                    "stream_id": stream_id,
+                    "state": item["state"],
+                    "processed_frames_delta": item["processed_frames"],
+                    "error": item["error"],
+                    "actual_backend": item["actual_backend"],
+                    "actual_device": item["actual_device"],
+                    "actual_provider": item["actual_provider"],
+                }
+            )
+    return failures
+
+
 def summarize_primary_window(
-    start_snapshots: dict[str, dict[str, float | int]],
-    end_snapshots: dict[str, dict[str, float | int]],
+    start_snapshots: dict[str, dict[str, object]],
+    end_snapshots: dict[str, dict[str, object]],
     measured_elapsed: float,
 ) -> dict:
     per_stream = {}
@@ -239,6 +346,11 @@ def summarize_primary_window(
             "received_frames": int(received),
             "dropped_frames": int(dropped),
             "dropped_frame_rate": _divide_or_zero(dropped, received),
+            "state": end.get("state"),
+            "actual_backend": end.get("actual_backend"),
+            "actual_device": end.get("actual_device"),
+            "actual_provider": end.get("actual_provider"),
+            "error": end.get("error"),
         }
     fps_values = [item["fps"] for item in per_stream.values()]
     return {
@@ -264,18 +376,18 @@ def run_processing_engine_scenario(
     resolution: tuple[int, int],
     warmup_seconds: float,
     measured_seconds: float,
+    startup_timeout_seconds: float = 60.0,
 ) -> dict:
     duration_failure = _primary_duration_failure(videos, warmup_seconds + measured_seconds)
     if duration_failure is not None:
-        return {
-            "name": name,
-            "status": "failed",
-            "reason": duration_failure,
-            "model": str(model_path),
-            "backend": backend_name,
-            "streams": len(videos),
-            "resolution": list(resolution),
-        }
+        return _primary_failure_payload(
+            name=name,
+            reason=duration_failure,
+            model_path=model_path,
+            backend_name=backend_name,
+            stream_count=len(videos),
+            resolution=resolution,
+        )
     device = select_device(force=device_name) if device_name else select_device()
     detector = create_backend(
         backend_name,
@@ -290,6 +402,21 @@ def run_processing_engine_scenario(
     stream_ids = [engine.add_stream(str(path)) for path in videos]
     try:
         engine.start_all()
+        ready, reason, records = _wait_for_primary_readiness(
+            engine,
+            stream_ids,
+            startup_timeout_seconds,
+        )
+        if not ready:
+            return _primary_failure_payload(
+                name=name,
+                reason=reason or "Primary startup readiness failed",
+                model_path=model_path,
+                backend_name=backend_name,
+                stream_count=len(stream_ids),
+                resolution=resolution,
+                failed_streams=records,
+            )
         warmup_deadline = time.perf_counter() + warmup_seconds
         while time.perf_counter() < warmup_deadline:
             time.sleep(0.05)
@@ -308,17 +435,44 @@ def run_processing_engine_scenario(
             for context in contexts
         }
         window = summarize_primary_window(start_snapshots, end_snapshots, elapsed)
-        total_processed = window["total_processed_frames"]
-        if total_processed == 0:
-            return {
-                "name": name,
-                "status": "failed",
-                "reason": "No frames were processed during the measured window",
-                "model": str(model_path),
-                "backend": backend_name,
-                "streams": len(stream_ids),
-                "resolution": list(resolution),
-            }
+        failed_streams = _primary_stream_failures(window)
+        if failed_streams:
+            return _primary_failure_payload(
+                name=name,
+                reason="One or more primary streams did not produce valid measured frames",
+                model_path=model_path,
+                backend_name=backend_name,
+                stream_count=len(stream_ids),
+                resolution=resolution,
+                failed_streams=failed_streams,
+                per_stream=window["per_stream"],
+            )
+        backend_device_pairs = {
+            (item["actual_backend"], item["actual_device"])
+            for item in window["per_stream"].values()
+        }
+        if len(backend_device_pairs) != 1:
+            return _primary_failure_payload(
+                name=name,
+                reason="Primary streams reported different actual backend/device values",
+                model_path=model_path,
+                backend_name=backend_name,
+                stream_count=len(stream_ids),
+                resolution=resolution,
+                failed_streams=[
+                    {
+                        "stream_id": stream_id,
+                        "state": item["state"],
+                        "processed_frames_delta": item["processed_frames"],
+                        "error": item["error"],
+                        "actual_backend": item["actual_backend"],
+                        "actual_device": item["actual_device"],
+                        "actual_provider": item["actual_provider"],
+                    }
+                    for stream_id, item in window["per_stream"].items()
+                ],
+                per_stream=window["per_stream"],
+            )
         first_context = contexts[0]
         return {
             "name": name,
@@ -484,6 +638,7 @@ def main() -> None:
     parser.add_argument("--warmup", type=int)
     parser.add_argument("--duration", type=float)
     parser.add_argument("--warmup-duration", type=float)
+    parser.add_argument("--startup-timeout", type=float, default=60.0)
     parser.add_argument(
         "--detection-metrics",
         type=Path,
@@ -535,6 +690,7 @@ def main() -> None:
                 resolution=resolution,
                 warmup_seconds=warmup_seconds,
                 measured_seconds=measured_seconds,
+                startup_timeout_seconds=args.startup_timeout,
             )
         scenarios.append(primary)
         scenarios.append(

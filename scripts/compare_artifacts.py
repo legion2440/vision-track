@@ -121,32 +121,34 @@ def evaluate_artifact(
     _warmup_backend(backend, image_paths, warmup_count)
     predictions: list[np.ndarray] = []
     ground_truth: list[np.ndarray] = []
-    latencies: list[float] = []
+    pipeline_latencies_ms: list[float] = []
+    backend_reported_latencies_ms: list[float] = []
     last_backend = backend.name
     last_device = device.torch_device
     last_provider = getattr(backend, "actual_provider", None) or None
-    started = time.perf_counter()
     for image_path in image_paths:
         image = _read_image(image_path)
         if image is None:
             continue
+        truth = yolo_labels_to_xyxy(
+            label_dir / f"{image_path.stem}.txt",
+            image.shape[1],
+            image.shape[0],
+        )
+        started = time.perf_counter()
         result = backend.infer(image)
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
         validate_cpu_comparison_runtime(backend_name=backend_name, result=result)
         last_backend = result.backend
         last_device = result.device
         last_provider = result.provider
         predictions.append(result.detections.xyxy)
-        ground_truth.append(
-            yolo_labels_to_xyxy(
-                label_dir / f"{image_path.stem}.txt",
-                image.shape[1],
-                image.shape[0],
-            )
-        )
-        latencies.append(result.latency_ms)
-    elapsed = time.perf_counter() - started
+        ground_truth.append(truth)
+        pipeline_latencies_ms.append(elapsed_ms)
+        backend_reported_latencies_ms.append(result.latency_ms)
     scores = smoke_match_scores(predictions, ground_truth, iou_threshold=gt_iou)
     measured = len(predictions)
+    total_pipeline_seconds = sum(pipeline_latencies_ms) / 1000.0
     return {
         "name": name,
         "status": "measured" if measured else "no_images",
@@ -161,8 +163,15 @@ def evaluate_artifact(
         "true_positives": scores.true_positives,
         "false_positives": scores.false_positives,
         "false_negatives": scores.false_negatives,
-        "inference_latency_ms": float(np.mean(latencies)) if latencies else None,
-        "throughput_fps": measured / elapsed if elapsed > 0 and measured else None,
+        "pipeline_latency_ms": float(np.mean(pipeline_latencies_ms))
+        if pipeline_latencies_ms
+        else None,
+        "throughput_fps": measured / total_pipeline_seconds
+        if total_pipeline_seconds > 0 and measured
+        else None,
+        "backend_reported_latency_ms": float(np.mean(backend_reported_latencies_ms))
+        if backend_reported_latencies_ms
+        else None,
         "warmup_images": warmup_count,
         "measured_images": measured,
         "confidence_threshold": confidence,
@@ -219,6 +228,12 @@ def build_comparison_payload(
             "warmup_count": warmup_count,
             "measured_image_count": measured_image_count,
             "comparison_device": comparison_device,
+            "latency_scope": (
+                "backend.infer wall clock from decoded image to postprocessed detections"
+            ),
+            "throughput_scope": (
+                "measured images divided by total backend.infer wall-clock time"
+            ),
             "matching": "greedy descending IoU, one prediction per ground-truth box",
         },
         "test_isolation_acknowledged": test_isolation_acknowledged,

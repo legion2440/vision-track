@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from vision_track.lifecycle import StreamState
-from vision_track.readers import VideoReader
+from vision_track.readers import VideoReader, _local_read_is_eof
 from vision_track.sources import VideoSource
 
 
@@ -79,6 +79,8 @@ class FakeCapture:
         if self.transient_failures.get(self.index, 0) > 0:
             self.transient_failures[self.index] -= 1
             return False, None
+        if self.failure_position is not None and self.index == self.failure_position:
+            return False, None
         if self.index >= self.frames:
             return False, None
         value = np.full((4, 4, 3), self.index, dtype=np.uint8)
@@ -93,13 +95,11 @@ class FakeCapture:
         if prop == cv2.CAP_PROP_FRAME_COUNT:
             return self.frame_count
         if prop == cv2.CAP_PROP_POS_FRAMES:
-            if self.index >= self.frames and self.failure_position is not None:
-                return self.failure_position
             return float(self.index)
         if prop == cv2.CAP_PROP_POS_MSEC:
             if self.index == 0:
                 return 0.0
-            return self.timestamps[self.index - 1]
+            return self.timestamps[min(self.index - 1, len(self.timestamps) - 1)]
         if prop == cv2.CAP_PROP_POS_AVI_RATIO:
             return self.avi_ratio
         return 0.0
@@ -170,13 +170,46 @@ def test_invalid_local_fps_falls_back_to_30fps(monkeypatch, tmp_path) -> None:
     assert queue.packets[2].captured_at == 10.0 + 2 / 30.0
 
 
+def test_two_frame_video_eof_requires_position_two() -> None:
+    capture = FakeCapture(
+        frames=2,
+        timestamps=[0.0, 50.0],
+        fps=20.0,
+        frame_count=2,
+    )
+
+    capture.index = 1
+    assert not _local_read_is_eof(capture, frames_read=1)
+
+    capture.index = 2
+    assert _local_read_is_eof(capture, frames_read=2)
+
+
+def test_failure_at_frame_count_minus_one_retries_instead_of_eof(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    capture = FakeCapture(
+        frames=2,
+        timestamps=[0.0, 50.0],
+        fps=20.0,
+        frame_count=2,
+        transient_failures={1: 1},
+    )
+    queue, states, errors, stop_event = _run_reader(monkeypatch, tmp_path, capture)
+
+    assert states[-1] is StreamState.EOF
+    assert errors == [None]
+    assert len(queue.packets) == 2
+    assert stop_event.waits
+
+
 def test_known_frame_count_at_end_produces_eof(monkeypatch, tmp_path) -> None:
     capture = FakeCapture(
         frames=2,
         timestamps=[0.0, 50.0],
         fps=20.0,
         frame_count=2,
-        failure_position=1,
     )
     _, states, errors, _ = _run_reader(monkeypatch, tmp_path, capture)
 
