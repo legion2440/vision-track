@@ -339,6 +339,7 @@ def test_normal_eof_does_not_write_error_log(monkeypatch, tmp_path) -> None:
     )
 
     _run_reader(monkeypatch, tmp_path, capture, logger=logger)
+    logger.removeHandler(handler)
     handler.close()
 
     assert log_path.read_text(encoding="utf-8") == ""

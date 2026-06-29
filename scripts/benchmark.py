@@ -8,6 +8,7 @@ import statistics
 import sys
 import tempfile
 import time
+from contextlib import ExitStack
 from pathlib import Path
 
 import cv2
@@ -156,7 +157,7 @@ def _primary_duration_failure(
         if frame_info is None:
             continue
         frame_count, fps = frame_info
-        required_frames = math.ceil(required_seconds * fps) + 1
+        required_frames = math.floor(required_seconds * fps) + 2
         if frame_count < required_frames:
             return (
                 f"Primary input {path} has {frame_count} frames at {fps:.2f} FPS, "
@@ -196,20 +197,37 @@ def prepare_resized_video(
     return destination
 
 
+def _snapshot_context_unlocked(context) -> dict[str, object]:
+    return {
+        "processed_frames": context.metrics.processed_frames,
+        "inference_latency_total_ms": context.metrics.inference_latency_total_ms,
+        "end_to_end_latency_total_ms": context.metrics.end_to_end_latency_total_ms,
+        "queue_received": context.queue.received,
+        "queue_dropped": context.queue.dropped,
+        "state": context.state.value,
+        "actual_backend": context.actual_backend,
+        "actual_device": context.actual_device,
+        "actual_provider": context.actual_provider,
+        "error": context.error,
+    }
+
+
 def _snapshot_context(context) -> dict[str, object]:
     with context.lock:
-        return {
-            "processed_frames": context.metrics.processed_frames,
-            "inference_latency_total_ms": context.metrics.inference_latency_total_ms,
-            "end_to_end_latency_total_ms": context.metrics.end_to_end_latency_total_ms,
-            "queue_received": context.queue.received,
-            "queue_dropped": context.queue.dropped,
-            "state": context.state.value,
-            "actual_backend": context.actual_backend,
-            "actual_device": context.actual_device,
-            "actual_provider": context.actual_provider,
-            "error": context.error,
+        return _snapshot_context_unlocked(context)
+
+
+def _snapshot_contexts_atomic(contexts) -> tuple[float, dict[str, dict[str, object]]]:
+    ordered_contexts = sorted(contexts, key=lambda context: context.stream_id)
+    with ExitStack() as stack:
+        for context in ordered_contexts:
+            stack.enter_context(context.lock)
+        captured_at = time.perf_counter()
+        snapshots = {
+            context.stream_id: _snapshot_context_unlocked(context)
+            for context in ordered_contexts
         }
+    return captured_at, snapshots
 
 
 def _delta(end: float | int, start: float | int) -> float:
@@ -384,12 +402,40 @@ def _poll_primary_phase(
         time.sleep(min(0.05, max(0.0, deadline - now)))
 
 
+def _snapshot_record(
+    stream_id: str,
+    snapshot: dict[str, object],
+    *,
+    elapsed_seconds: float,
+    processed_frames_delta: int | None = None,
+) -> dict[str, object]:
+    record = {
+        "stream_id": stream_id,
+        "state": snapshot["state"],
+        "processed_frames": snapshot["processed_frames"],
+        "actual_backend": snapshot["actual_backend"],
+        "actual_device": snapshot["actual_device"],
+        "actual_provider": snapshot["actual_provider"],
+        "error": snapshot["error"],
+        "elapsed_seconds": elapsed_seconds,
+    }
+    if processed_frames_delta is not None:
+        record["processed_frames_delta"] = processed_frames_delta
+    return record
+
+
 def _warmup_validation_failures(
-    engine: ProcessingEngine,
-    stream_ids: list[str],
-    phase_started: float,
+    snapshots: dict[str, dict[str, object]],
+    elapsed_seconds: float,
 ) -> list[dict[str, object]]:
-    records = _stream_records(engine, stream_ids, phase_started)
+    records = [
+        _snapshot_record(
+            stream_id,
+            snapshot,
+            elapsed_seconds=elapsed_seconds,
+        )
+        for stream_id, snapshot in snapshots.items()
+    ]
     return [
         record
         for record in records
@@ -409,7 +455,8 @@ def _measurement_validation_failures(
     for stream_id, item in window["per_stream"].items():
         end = end_snapshots[stream_id]
         if (
-            item["state"] != StreamState.ACTIVE.value
+            elapsed_seconds <= 0
+            or item["state"] != StreamState.ACTIVE.value
             or item["processed_frames"] <= 0
             or item["actual_backend"] is None
             or item["actual_device"] is None
@@ -603,10 +650,11 @@ def run_processing_engine_scenario(
                 phase="warmup",
                 failed_streams=warmup_failures,
             )
+        contexts = [engine.get(stream_id) for stream_id in stream_ids]
+        measurement_started, start_snapshots = _snapshot_contexts_atomic(contexts)
         warmup_validation_failures = _warmup_validation_failures(
-            engine,
-            stream_ids,
-            warmup_started,
+            start_snapshots,
+            measurement_started - warmup_started,
         )
         if warmup_validation_failures:
             return _primary_failure_payload(
@@ -619,12 +667,7 @@ def run_processing_engine_scenario(
                 phase="warmup",
                 failed_streams=warmup_validation_failures,
             )
-        start_snapshots = {
-            stream_id: _snapshot_context(engine.get(stream_id))
-            for stream_id in stream_ids
-        }
-        measurement_deadline = warmup_deadline + measured_seconds
-        measurement_started = warmup_deadline
+        measurement_deadline = measurement_started + measured_seconds
         measurement_failures = _poll_primary_phase(
             engine,
             stream_ids,
@@ -644,17 +687,13 @@ def run_processing_engine_scenario(
                 phase="measurement",
                 failed_streams=measurement_failures,
             )
-        elapsed = time.perf_counter() - measurement_started
-        contexts = [engine.get(stream_id) for stream_id in stream_ids]
-        end_snapshots = {
-            context.stream_id: _snapshot_context(context)
-            for context in contexts
-        }
-        window = summarize_primary_window(start_snapshots, end_snapshots, elapsed)
+        measurement_ended, end_snapshots = _snapshot_contexts_atomic(contexts)
+        measured_elapsed = measurement_ended - measurement_started
+        window = summarize_primary_window(start_snapshots, end_snapshots, measured_elapsed)
         failed_streams = _measurement_validation_failures(
             window,
             end_snapshots,
-            elapsed,
+            measured_elapsed,
         )
         if failed_streams:
             return _primary_failure_payload(
@@ -665,7 +704,7 @@ def run_processing_engine_scenario(
                 stream_count=len(stream_ids),
                 resolution=resolution,
                 phase="measurement_validation",
-                elapsed_seconds=elapsed,
+                elapsed_seconds=measured_elapsed,
                 failed_streams=failed_streams,
                 per_stream=window["per_stream"],
             )
@@ -682,8 +721,8 @@ def run_processing_engine_scenario(
                 stream_count=len(stream_ids),
                 resolution=resolution,
                 phase="measurement_validation",
-                elapsed_seconds=elapsed,
-                failed_streams=_window_records(window, end_snapshots, elapsed),
+                elapsed_seconds=measured_elapsed,
+                failed_streams=_window_records(window, end_snapshots, measured_elapsed),
                 per_stream=window["per_stream"],
             )
         actual_backend, actual_device, actual_provider = next(iter(runtime_tuples))

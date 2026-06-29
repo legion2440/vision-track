@@ -72,6 +72,8 @@ class VideoReader:
         reconnect_backoff_seconds: float = 1.0,
         runtime_generation: int = 0,
         is_current_callback: Callable[[], bool] | None = None,
+        packet_callback: Callable[[FramePacket], bool | None] | None = None,
+        failure_log_callback: Callable[[Exception, StreamState], bool | None] | None = None,
         clock: Callable[[], float] = perf_counter,
     ) -> None:
         self.stream_id = stream_id
@@ -84,6 +86,8 @@ class VideoReader:
         self.reconnect_backoff_seconds = max(0.0, reconnect_backoff_seconds)
         self.runtime_generation = runtime_generation
         self.is_current_callback = is_current_callback
+        self.packet_callback = packet_callback
+        self.failure_log_callback = failure_log_callback
         self._clock = clock
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -139,6 +143,25 @@ class VideoReader:
 
     def _emit_error(self, error: str | None) -> bool:
         return self._callback_applied(self.error_callback(error))
+
+    def _emit_packet(self, packet: FramePacket) -> bool:
+        if self.packet_callback is None:
+            self.frame_queue.put(packet)
+            return True
+        return self._callback_applied(self.packet_callback(packet))
+
+    def _emit_failure_log(self, exc: Exception, state: StreamState) -> bool:
+        if self.failure_log_callback is None:
+            log_stream_error(
+                self.logger,
+                stream_id=self.stream_id,
+                source_type=self.source.source_type.value,
+                state=state.value,
+                exc=exc,
+                unexpected=False,
+            )
+            return True
+        return self._callback_applied(self.failure_log_callback(exc, state))
 
     def _wait_for_local_presentation(
         self,
@@ -234,15 +257,15 @@ class VideoReader:
                             break
                     if not self._is_current():
                         return
-                    self.frame_queue.put(
-                        FramePacket(
-                            frame=frame,
-                            frame_index=frame_index,
-                            captured_at=self._clock(),
-                            runtime_generation=self.runtime_generation,
-                            source_timestamp_ms=timestamp,
-                        )
+                    packet = FramePacket(
+                        frame=frame,
+                        frame_index=frame_index,
+                        captured_at=self._clock(),
+                        runtime_generation=self.runtime_generation,
+                        source_timestamp_ms=timestamp,
                     )
+                    if not self._emit_packet(packet):
+                        return
                     frame_index += 1
             except Exception as exc:
                 if self._stop_event.is_set():
@@ -263,14 +286,8 @@ class VideoReader:
                     return
                 if not self._is_current():
                     return
-                log_stream_error(
-                    self.logger,
-                    stream_id=self.stream_id,
-                    source_type=self.source.source_type.value,
-                    state=current.value,
-                    exc=exc,
-                    unexpected=False,
-                )
+                if not self._emit_failure_log(exc, current):
+                    return
                 if not self.source.is_remote or attempt > self.reconnect_attempts:
                     return
                 if not self._is_current():

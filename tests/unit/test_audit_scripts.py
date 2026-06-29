@@ -106,6 +106,7 @@ def _run_fake_primary(
     measured_seconds: float = 0.1,
     startup_timeout_seconds: float = 1.0,
     snapshot_times: list[float] | None = None,
+    atomic_snapshot_hook=None,
 ) -> tuple[dict, FakePrimaryClock, object]:
     from scripts import benchmark
 
@@ -168,14 +169,27 @@ def _run_fake_primary(
     monkeypatch.setattr(benchmark, "ProcessingEngine", FakeEngine)
     monkeypatch.setattr(benchmark.time, "perf_counter", clock.perf_counter)
     monkeypatch.setattr(benchmark.time, "sleep", sleep)
-    if snapshot_times is not None:
-        original_snapshot = benchmark._snapshot_context
+    if snapshot_times is not None or atomic_snapshot_hook is not None:
+        original_atomic_snapshot = benchmark._snapshot_contexts_atomic
+        snapshot_call = 0
 
-        def snapshot(context):
-            snapshot_times.append(clock.now)
-            return original_snapshot(context)
+        def snapshot_contexts_atomic(contexts):
+            nonlocal snapshot_call
+            context_list = list(contexts)
+            snapshot_call += 1
+            if atomic_snapshot_hook is not None:
+                atomic_snapshot_hook(
+                    engine_holder["engine"],
+                    clock,
+                    context_list,
+                    snapshot_call,
+                )
+            timestamp, snapshots = original_atomic_snapshot(context_list)
+            if snapshot_times is not None:
+                snapshot_times.extend([timestamp] * len(context_list))
+            return timestamp, snapshots
 
-        monkeypatch.setattr(benchmark, "_snapshot_context", snapshot)
+        monkeypatch.setattr(benchmark, "_snapshot_contexts_atomic", snapshot_contexts_atomic)
 
     config = types.SimpleNamespace(
         model=types.SimpleNamespace(confidence=0.35, iou=0.5, person_class_id=0),
@@ -327,6 +341,99 @@ def test_primary_window_zero_denominators_do_not_produce_nan() -> None:
     assert result["aggregate_fps"] == 0.0
     assert result["inference_latency_ms"] == 0.0
     assert result["end_to_end_latency_ms"] == 0.0
+    assert result["dropped_frame_rate"] == 0.0
+
+
+def test_atomic_primary_snapshots_lock_in_stream_id_order(monkeypatch) -> None:
+    from scripts import benchmark
+
+    acquired: list[str] = []
+
+    class RecordingLock:
+        def __init__(self, stream_id: str) -> None:
+            self.stream_id = stream_id
+
+        def __enter__(self):
+            acquired.append(self.stream_id)
+            return self
+
+        def __exit__(self, _exc_type, _exc, _traceback) -> None:
+            return None
+
+    first = FakePrimaryContext("stream-b")
+    second = FakePrimaryContext("stream-a")
+    first.lock = RecordingLock(first.stream_id)
+    second.lock = RecordingLock(second.stream_id)
+    _mark_primary_ready(first)
+    _mark_primary_ready(second)
+    monkeypatch.setattr(benchmark.time, "perf_counter", lambda: 123.0)
+
+    timestamp, snapshots = benchmark._snapshot_contexts_atomic([first, second])
+
+    assert timestamp == 123.0
+    assert acquired == ["stream-a", "stream-b"]
+    assert list(snapshots) == ["stream-a", "stream-b"]
+
+
+def test_primary_atomic_start_and_end_snapshots_share_timestamps(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    snapshot_times: list[float] = []
+
+    def updater(engine, _now: float, seconds: float, event: str) -> None:
+        if event == "stop_all":
+            return
+        for context in engine.contexts_by_id.values():
+            _mark_primary_ready(context)
+            if seconds > 0:
+                _advance_primary_context(context)
+
+    result, _clock, _engine = _run_fake_primary(
+        monkeypatch,
+        tmp_path,
+        updater,
+        snapshot_times=snapshot_times,
+    )
+
+    assert result["status"] == "ok"
+    assert snapshot_times[0] == snapshot_times[1]
+    assert snapshot_times[2] == snapshot_times[3]
+    assert snapshot_times[2] > snapshot_times[0]
+
+
+def test_primary_measurement_uses_atomic_start_timestamp_for_deadline_and_elapsed(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    def updater(engine, _now: float, seconds: float, event: str) -> None:
+        if event == "stop_all":
+            return
+        for context in engine.contexts_by_id.values():
+            _mark_primary_ready(context)
+            if engine.start_all_calls == 2 and event == "start_all":
+                context.metrics.processed_frames = 100
+                context.queue.received = 100
+                context.queue.dropped = 40
+            if engine.start_all_calls == 2 and seconds > 0:
+                _advance_primary_context(context)
+
+    def delay_start_snapshot(_engine, clock, _contexts, snapshot_call: int) -> None:
+        if snapshot_call == 1:
+            clock.now += 0.2
+
+    result, _clock, _engine = _run_fake_primary(
+        monkeypatch,
+        tmp_path,
+        updater,
+        warmup_seconds=0.1,
+        measured_seconds=0.1,
+        atomic_snapshot_hook=delay_start_snapshot,
+    )
+
+    assert result["status"] == "ok"
+    assert result["processed_frames_per_stream"] == {"stream-0": 2, "stream-1": 2}
+    assert result["aggregate_fps"] == pytest.approx(40.0)
     assert result["dropped_frame_rate"] == 0.0
 
 
@@ -666,6 +773,40 @@ def test_primary_measurement_fails_on_terminal_stream_state(
     assert result["failed_streams"][0]["stream_id"] == "stream-1"
 
 
+@pytest.mark.parametrize(
+    "state",
+    [StreamState.EOF, StreamState.FAILED, StreamState.STOPPED],
+)
+def test_primary_terminal_state_visible_at_end_snapshot_fails_validation(
+    monkeypatch,
+    tmp_path: Path,
+    state: StreamState,
+) -> None:
+    def updater(engine, _now: float, seconds: float, event: str) -> None:
+        if event == "stop_all":
+            return
+        for context in engine.contexts_by_id.values():
+            _mark_primary_ready(context)
+            if seconds > 0:
+                _advance_primary_context(context)
+
+    def transition_at_end_snapshot(engine, _clock, _contexts, snapshot_call: int) -> None:
+        if snapshot_call == 2:
+            engine.contexts_by_id["stream-1"].state = state
+
+    result, _clock, _engine = _run_fake_primary(
+        monkeypatch,
+        tmp_path,
+        updater,
+        atomic_snapshot_hook=transition_at_end_snapshot,
+    )
+
+    assert result["status"] == "failed"
+    assert result["phase"] == "measurement_validation"
+    assert result["failed_streams"][0]["stream_id"] == "stream-1"
+    assert result["failed_streams"][0]["state"] == state.value
+
+
 def test_primary_backend_device_disagreement_fails(monkeypatch, tmp_path: Path) -> None:
     def updater(engine, _now: float, seconds: float, event: str) -> None:
         if event == "stop_all":
@@ -733,26 +874,40 @@ def test_primary_two_valid_streams_produce_ok(monkeypatch, tmp_path: Path) -> No
     assert result["per_stream"]["stream-1"]["actual_device"] == "cpu"
 
 
-def test_primary_duration_precheck_requires_extra_frame(monkeypatch, tmp_path: Path) -> None:
-    from scripts import benchmark
-
-    monkeypatch.setattr(benchmark, "_known_video_frame_info", lambda _path: (30, 10.0))
-
-    result = benchmark._primary_duration_failure([tmp_path / "video.avi"], 3.0)
-
-    assert result is not None
-    assert "frame count 31" in result
-
-
-def test_primary_duration_precheck_allows_required_extra_frame(
+@pytest.mark.parametrize(
+    ("required_seconds", "frame_count", "should_fail"),
+    [
+        (3.0, 31, True),
+        (3.0, 32, False),
+        (3.05, 31, True),
+        (3.05, 32, False),
+    ],
+)
+def test_primary_duration_precheck_enforces_strictly_greater_duration(
     monkeypatch,
     tmp_path: Path,
+    required_seconds: float,
+    frame_count: int,
+    should_fail: bool,
 ) -> None:
     from scripts import benchmark
 
-    monkeypatch.setattr(benchmark, "_known_video_frame_info", lambda _path: (31, 10.0))
+    monkeypatch.setattr(
+        benchmark,
+        "_known_video_frame_info",
+        lambda _path: (frame_count, 10.0),
+    )
 
-    assert benchmark._primary_duration_failure([tmp_path / "video.avi"], 3.0) is None
+    result = benchmark._primary_duration_failure(
+        [tmp_path / "video.avi"],
+        required_seconds,
+    )
+
+    if should_fail:
+        assert result is not None
+        assert "frame count 32" in result
+    else:
+        assert result is None
 
 
 def test_primary_duration_precheck_allows_unknown_duration(

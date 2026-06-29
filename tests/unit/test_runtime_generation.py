@@ -17,7 +17,7 @@ from vision_track.detector import DetectorBackend, InferenceResult
 from vision_track.device import DeviceInfo
 from vision_track.engine import ProcessingEngine
 from vision_track.lifecycle import StreamState
-from vision_track.queues import FramePacket
+from vision_track.queues import FramePacket, LatestFrameQueue
 from vision_track.scheduler import SharedInferenceScheduler
 from vision_track.sources import VideoSource
 
@@ -74,6 +74,45 @@ class ReaderCapture:
 
     def get(self, _prop: int) -> float:
         return 30.0
+
+
+class DelayedReadCapture(ReaderCapture):
+    def __init__(self) -> None:
+        super().__init__()
+        self.read_started = threading.Event()
+        self.release_read = threading.Event()
+
+    def read(self):
+        self.read_started.set()
+        self.release_read.wait(timeout=2.0)
+        return super().read()
+
+
+class DecodeFailureCapture(ReaderCapture):
+    def __init__(self) -> None:
+        super().__init__()
+        self.index = 0
+
+    def read(self):
+        if self.index == 0:
+            self.index += 1
+            return True, np.zeros((4, 4, 3), dtype=np.uint8)
+        return False, None
+
+    def get(self, prop: int) -> float:
+        import cv2
+
+        if prop == cv2.CAP_PROP_FPS:
+            return 30.0
+        if prop == cv2.CAP_PROP_FRAME_COUNT:
+            return 5.0
+        if prop == cv2.CAP_PROP_POS_FRAMES:
+            return float(self.index)
+        if prop == cv2.CAP_PROP_POS_MSEC:
+            return 0.0
+        if prop == cv2.CAP_PROP_POS_AVI_RATIO:
+            return 0.0
+        return 0.0
 
 
 class DelayedOpen:
@@ -167,6 +206,12 @@ def _wait_until(predicate, timeout: float = 2.0) -> bool:
     return False
 
 
+def _close_logger(logger: logging.Logger) -> None:
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+        handler.close()
+
+
 def _engine(tmp_path: Path, detector: DetectorBackend) -> ProcessingEngine:
     config = replace(load_config(), log_file=str(tmp_path / "app_errors.log"))
     return ProcessingEngine(
@@ -226,6 +271,114 @@ def test_current_generation_error_callback_applies_normally(tmp_path: Path) -> N
         assert reader.error_callback("current error") is True
         assert context.error == "current error"
     finally:
+        engine.shutdown()
+
+
+def test_current_generation_packet_callback_accepts_and_counts(tmp_path: Path) -> None:
+    engine, context, reader = _reader_for_context(tmp_path)
+    try:
+        assert reader.packet_callback is not None
+
+        assert reader.packet_callback(_packet(context.runtime_generation, value=4)) is True
+
+        assert context.queue.received == 1
+        assert context.queue.dropped == 0
+        queued = context.queue.get_nowait()
+        assert queued.frame_index == 4
+    finally:
+        engine.shutdown()
+
+
+def test_stale_packet_callback_cannot_mutate_queue_or_stats(tmp_path: Path) -> None:
+    engine, context, reader = _reader_for_context(tmp_path)
+    try:
+        context.queue.put(_packet(context.runtime_generation, value=7))
+        with context.lock:
+            context.runtime_generation += 1
+        received_before = context.queue.received
+        dropped_before = context.queue.dropped
+
+        assert reader.packet_callback is not None
+        assert reader.packet_callback(_packet(reader.runtime_generation, value=9)) is False
+
+        assert context.queue.received == received_before
+        assert context.queue.dropped == dropped_before
+        queued = context.queue.get_nowait()
+        assert queued.frame_index == 7
+    finally:
+        engine.shutdown()
+
+
+def test_packet_callback_rejects_when_invalidation_wins_lock_race(tmp_path: Path) -> None:
+    engine, context, reader = _reader_for_context(tmp_path)
+    result: list[bool] = []
+    thread = threading.Thread(
+        target=lambda: result.append(reader.packet_callback(_packet(reader.runtime_generation))),
+        daemon=True,
+    )
+    try:
+        assert reader.packet_callback is not None
+        with context.lock:
+            thread.start()
+            context.runtime_generation += 1
+        thread.join(timeout=2.0)
+
+        assert result == [False]
+        assert context.queue.received == 0
+        assert context.queue.empty()
+    finally:
+        engine.shutdown()
+
+
+class BlockingLatestFrameQueue(LatestFrameQueue):
+    def __init__(self) -> None:
+        super().__init__()
+        self.put_started = threading.Event()
+        self.release_put = threading.Event()
+
+    def put(self, packet: FramePacket) -> None:
+        self.put_started.set()
+        self.release_put.wait(timeout=2.0)
+        super().put(packet)
+
+
+def test_packet_callback_accepts_when_enqueue_wins_lock_race(tmp_path: Path) -> None:
+    engine = _engine(tmp_path, ImmediateDetector())
+    stream_id = engine.add_stream("enqueue-race.mp4")
+    context = engine.get(stream_id)
+    context.queue = BlockingLatestFrameQueue()
+    reader = engine._build_reader(context)
+    result: list[bool] = []
+    invalidated = threading.Event()
+
+    def invalidate() -> None:
+        with context.lock:
+            context.runtime_generation += 1
+        invalidated.set()
+
+    packet_thread = threading.Thread(
+        target=lambda: result.append(reader.packet_callback(_packet(reader.runtime_generation))),
+        daemon=True,
+    )
+    invalidation_thread = threading.Thread(target=invalidate, daemon=True)
+    try:
+        assert reader.packet_callback is not None
+        packet_thread.start()
+        assert context.queue.put_started.wait(timeout=2.0)
+        invalidation_thread.start()
+        time.sleep(0.05)
+        assert not invalidated.is_set()
+
+        context.queue.release_put.set()
+        packet_thread.join(timeout=2.0)
+        invalidation_thread.join(timeout=2.0)
+
+        assert result == [True]
+        assert invalidated.is_set()
+        assert context.queue.received == 1
+        assert context.runtime_generation == reader.runtime_generation + 1
+    finally:
+        context.queue.release_put.set()
         engine.shutdown()
 
 
@@ -318,6 +471,133 @@ def test_delayed_open_failure_after_invalidation_is_silent(tmp_path: Path) -> No
     finally:
         reader.stop(timeout=0.01)
         engine.shutdown()
+
+
+def test_delayed_read_after_invalidation_cannot_enqueue(tmp_path: Path) -> None:
+    engine, context, reader = _reader_for_context(tmp_path)
+    capture = DelayedReadCapture()
+    reader._open = lambda: capture
+    try:
+        reader.start()
+        assert capture.read_started.wait(timeout=2.0)
+        with context.lock:
+            context.runtime_generation += 1
+            context.force_state(StreamState.STOPPED)
+        capture.release_read.set()
+        assert _wait_until(lambda: not reader.running)
+
+        assert context.queue.received == 0
+        assert context.queue.empty()
+    finally:
+        capture.release_read.set()
+        reader.stop(timeout=0.01)
+        engine.shutdown()
+
+
+def test_delayed_read_after_runtime_reset_cannot_pollute_reset_queue_stats(
+    tmp_path: Path,
+) -> None:
+    engine, context, reader = _reader_for_context(tmp_path)
+    capture = DelayedReadCapture()
+    reader._open = lambda: capture
+    try:
+        reader.start()
+        assert capture.read_started.wait(timeout=2.0)
+        engine._reset_context_runtime(context)
+        capture.release_read.set()
+        assert _wait_until(lambda: not reader.running)
+
+        assert context.queue.received == 0
+        assert context.queue.dropped == 0
+        assert context.metrics.processed_frames == 0
+    finally:
+        capture.release_read.set()
+        reader.stop(timeout=0.01)
+        engine.shutdown()
+
+
+def test_current_failure_log_callback_writes_temp_log(tmp_path: Path) -> None:
+    engine, _context, reader = _reader_for_context(tmp_path)
+    log_path = tmp_path / "app_errors.log"
+    try:
+        assert reader.failure_log_callback is not None
+        assert reader.failure_log_callback(OSError("current failure"), StreamState.FAILED) is True
+        for handler in engine.logger.handlers:
+            handler.flush()
+
+        log_text = log_path.read_text(encoding="utf-8")
+        assert "OSError: current failure" in log_text
+        assert "state=FAILED" in log_text
+    finally:
+        engine.shutdown()
+        _close_logger(engine.logger)
+
+
+def test_stale_failure_log_callback_writes_nothing(tmp_path: Path) -> None:
+    engine, context, reader = _reader_for_context(tmp_path)
+    log_path = tmp_path / "app_errors.log"
+    try:
+        with context.lock:
+            context.runtime_generation += 1
+
+        assert reader.failure_log_callback is not None
+        assert reader.failure_log_callback(OSError("stale failure"), StreamState.FAILED) is False
+        for handler in engine.logger.handlers:
+            handler.flush()
+
+        assert not log_path.exists() or log_path.read_text(encoding="utf-8") == ""
+    finally:
+        engine.shutdown()
+        _close_logger(engine.logger)
+
+
+def test_invalidation_between_error_state_and_failure_log_suppresses_stale_log(
+    tmp_path: Path,
+) -> None:
+    engine, context, reader = _reader_for_context(tmp_path)
+    log_path = tmp_path / "app_errors.log"
+    try:
+        assert reader.error_callback("old failure") is True
+        assert reader.state_callback(StreamState.FAILED) is True
+        with context.lock:
+            context.runtime_generation += 1
+            context.error = "current error"
+            context.force_state(StreamState.STOPPED)
+
+        assert reader.failure_log_callback is not None
+        assert reader.failure_log_callback(OSError("old failure"), StreamState.FAILED) is False
+        for handler in engine.logger.handlers:
+            handler.flush()
+
+        assert context.error == "current error"
+        assert context.state is StreamState.STOPPED
+        assert not log_path.exists() or log_path.read_text(encoding="utf-8") == ""
+    finally:
+        engine.shutdown()
+        _close_logger(engine.logger)
+
+
+def test_current_decode_failure_sets_failed_error_and_logs_temp_failure(
+    tmp_path: Path,
+) -> None:
+    engine, context, reader = _reader_for_context(tmp_path)
+    capture = DecodeFailureCapture()
+    reader._open = lambda: capture
+    log_path = tmp_path / "app_errors.log"
+    try:
+        reader.start()
+        assert _wait_until(lambda: context.state is StreamState.FAILED)
+        assert "Decode failure before end" in (context.error or "")
+        for handler in engine.logger.handlers:
+            handler.flush()
+
+        log_text = log_path.read_text(encoding="utf-8")
+        assert "Decode failure before end of local video" in log_text
+        assert "state=FAILED" in log_text
+    finally:
+        reader.stop(timeout=0.01)
+        engine.shutdown()
+        _close_logger(engine.logger)
 
 
 def test_old_inference_after_stop_cannot_update_runtime(

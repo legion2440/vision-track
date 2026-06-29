@@ -11,7 +11,8 @@ from .counting import ZoneCounter, ZoneGeometry
 from .detector import DetectorBackend, create_backend
 from .device import DeviceInfo, select_device
 from .lifecycle import StreamState
-from .logging_utils import configure_logging
+from .logging_utils import configure_logging, log_stream_error
+from .queues import FramePacket
 from .readers import VideoReader
 from .scheduler import SharedInferenceScheduler
 from .sources import VideoSource, new_stream_id
@@ -175,6 +176,27 @@ class ProcessingEngine:
                 context.error = error
                 return True
 
+        def packet_callback(packet: FramePacket) -> bool:
+            with context.lock:
+                if context.runtime_generation != captured_generation:
+                    return False
+                context.queue.put(packet)
+                return True
+
+        def failure_log_callback(exc: Exception, state: StreamState) -> bool:
+            with context.lock:
+                if context.runtime_generation != captured_generation:
+                    return False
+                log_stream_error(
+                    self.logger,
+                    stream_id=stream_id,
+                    source_type=captured_source.source_type.value,
+                    state=state.value,
+                    exc=exc,
+                    unexpected=False,
+                )
+                return True
+
         return VideoReader(
             stream_id=stream_id,
             source=captured_source,
@@ -186,6 +208,8 @@ class ProcessingEngine:
             reconnect_backoff_seconds=self.config.runtime.reconnect_backoff_seconds,
             runtime_generation=captured_generation,
             is_current_callback=is_current,
+            packet_callback=packet_callback,
+            failure_log_callback=failure_log_callback,
         )
 
     def start(self, stream_id: str) -> None:
