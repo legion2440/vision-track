@@ -65,12 +65,13 @@ class VideoReader:
         stream_id: str,
         source: VideoSource,
         frame_queue: LatestFrameQueue,
-        state_callback: Callable[[StreamState], None],
-        error_callback: Callable[[str | None], None],
+        state_callback: Callable[[StreamState], bool | None],
+        error_callback: Callable[[str | None], bool | None],
         logger: logging.Logger,
         reconnect_attempts: int = 5,
         reconnect_backoff_seconds: float = 1.0,
         runtime_generation: int = 0,
+        is_current_callback: Callable[[], bool] | None = None,
         clock: Callable[[], float] = perf_counter,
     ) -> None:
         self.stream_id = stream_id
@@ -82,6 +83,7 @@ class VideoReader:
         self.reconnect_attempts = max(0, reconnect_attempts)
         self.reconnect_backoff_seconds = max(0.0, reconnect_backoff_seconds)
         self.runtime_generation = runtime_generation
+        self.is_current_callback = is_current_callback
         self._clock = clock
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -123,6 +125,21 @@ class VideoReader:
             raise OSError(f"Unable to open video source: {self.source.safe_uri}")
         return capture
 
+    def _is_current(self) -> bool:
+        if self.is_current_callback is None:
+            return True
+        return bool(self.is_current_callback())
+
+    @staticmethod
+    def _callback_applied(result: bool | None) -> bool:
+        return result is not False
+
+    def _emit_state(self, state: StreamState) -> bool:
+        return self._callback_applied(self.state_callback(state))
+
+    def _emit_error(self, error: str | None) -> bool:
+        return self._callback_applied(self.error_callback(error))
+
     def _wait_for_local_presentation(
         self,
         *,
@@ -141,27 +158,44 @@ class VideoReader:
     def _run(self) -> None:
         frame_index = 0
         attempt = 0
-        self.state_callback(StreamState.CONNECTING)
+        if not self._is_current():
+            return
+        if not self._emit_state(StreamState.CONNECTING):
+            return
         while not self._stop_event.is_set():
+            if not self._is_current():
+                return
             try:
                 self._capture = self._open()
+                if not self._is_current():
+                    return
                 source_fps = _normalized_fps(
                     _safe_capture_value(self._capture, cv2.CAP_PROP_FPS)
                 )
                 previous_timestamp_ms: float | None = None
                 playback_origin: float | None = None
                 local_failures = 0
-                self.error_callback(None)
-                self.state_callback(StreamState.ACTIVE)
+                if not self._is_current():
+                    return
+                if not self._emit_error(None):
+                    return
+                if not self._is_current():
+                    return
+                if not self._emit_state(StreamState.ACTIVE):
+                    return
                 attempt = 0
                 while not self._stop_event.is_set():
+                    if not self._is_current():
+                        return
                     ok, frame = self._capture.read()
                     if not ok or frame is None:
                         if self._stop_event.is_set():
                             break
                         if self.source.source_type is SourceType.LOCAL:
                             if _local_read_is_eof(self._capture, frame_index):
-                                self.state_callback(StreamState.EOF)
+                                if not self._is_current():
+                                    return
+                                self._emit_state(StreamState.EOF)
                                 return
                             local_failures += 1
                             if local_failures <= LOCAL_READ_RETRIES:
@@ -169,7 +203,9 @@ class VideoReader:
                                     break
                                 continue
                             if _local_read_is_eof(self._capture, frame_index):
-                                self.state_callback(StreamState.EOF)
+                                if not self._is_current():
+                                    return
+                                self._emit_state(StreamState.EOF)
                                 return
                             raise OSError(
                                 "Decode failure before end of local video: "
@@ -196,6 +232,8 @@ class VideoReader:
                             target_seconds=target_seconds,
                         ):
                             break
+                    if not self._is_current():
+                        return
                     self.frame_queue.put(
                         FramePacket(
                             frame=frame,
@@ -209,14 +247,22 @@ class VideoReader:
             except Exception as exc:
                 if self._stop_event.is_set():
                     break
+                if not self._is_current():
+                    return
                 attempt += 1
-                self.error_callback(str(exc))
+                if not self._emit_error(str(exc)):
+                    return
                 current = (
                     StreamState.RECONNECTING
                     if self.source.is_remote and attempt <= self.reconnect_attempts
                     else StreamState.FAILED
                 )
-                self.state_callback(current)
+                if not self._is_current():
+                    return
+                if not self._emit_state(current):
+                    return
+                if not self._is_current():
+                    return
                 log_stream_error(
                     self.logger,
                     stream_id=self.stream_id,
@@ -227,6 +273,8 @@ class VideoReader:
                 )
                 if not self.source.is_remote or attempt > self.reconnect_attempts:
                     return
+                if not self._is_current():
+                    return
                 delay = self.reconnect_backoff_seconds * (2 ** min(attempt - 1, 4))
                 if self._stop_event.wait(delay):
                     break
@@ -234,4 +282,5 @@ class VideoReader:
                 if self._capture is not None:
                     self._capture.release()
                     self._capture = None
-        self.state_callback(StreamState.STOPPED)
+        if self._is_current():
+            self._emit_state(StreamState.STOPPED)

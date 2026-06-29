@@ -68,17 +68,21 @@ class SharedInferenceScheduler:
         self._loaded = True
 
     def _take_batch(self) -> list[tuple[StreamContext, FramePacket]]:
+        contexts = self.contexts_provider()
+        if not contexts:
+            self._cursor = 0
+            return []
+
+        self._cursor %= len(contexts)
         batch: list[tuple[StreamContext, FramePacket]] = []
         seen_streams: set[str] = set()
-        deadline = time.perf_counter() + self.max_batch_wait_ms / 1000.0
         last_considered: int | None = None
-        while len(batch) < self.max_batch_size and not self._stop_event.is_set():
+        deadline: float | None = None
+        start = self._cursor
+
+        def scan_once() -> bool:
+            nonlocal deadline, last_considered
             added = False
-            contexts = self.contexts_provider()
-            if not contexts:
-                self._cursor = 0
-                break
-            start = self._cursor % len(contexts)
             for offset in range(len(contexts)):
                 if len(batch) >= self.max_batch_size:
                     break
@@ -105,24 +109,31 @@ class SharedInferenceScheduler:
                     batch.append((context, packet))
                     seen_streams.add(stream_id)
                     added = True
+                    if deadline is None:
+                        deadline = time.perf_counter() + self.max_batch_wait_ms / 1000.0
                 except queue.Empty:
                     continue
-            if not batch and not added:
-                pass
-            if len(batch) >= self.max_batch_size:
+            return added
+
+        scan_once()
+        if not batch or len(batch) >= self.max_batch_size or self._stop_event.is_set():
+            if last_considered is not None:
+                self._cursor = (last_considered + 1) % len(contexts)
+            return batch
+
+        while len(batch) < self.max_batch_size and not self._stop_event.is_set():
+            if deadline is None:
                 break
             remaining = deadline - time.perf_counter()
             if remaining <= 0:
                 break
             if self._stop_event.wait(min(self.idle_seconds, remaining)):
                 break
-        current_count = len(self.contexts_provider())
-        if current_count == 0:
-            self._cursor = 0
-        elif last_considered is not None:
-            self._cursor = (last_considered + 1) % current_count
-        else:
-            self._cursor %= current_count
+            scan_once()
+            if len(batch) >= self.max_batch_size:
+                break
+        if last_considered is not None:
+            self._cursor = (last_considered + 1) % len(contexts)
         return batch
 
     @staticmethod

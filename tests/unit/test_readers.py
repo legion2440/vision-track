@@ -232,6 +232,33 @@ def test_local_decode_failure_before_eof_sets_failed(monkeypatch, tmp_path) -> N
     assert len(stop_event.waits) == 3
 
 
+def test_current_local_decode_failure_writes_error_log(monkeypatch, tmp_path) -> None:
+    log_path = tmp_path / "reader-failure.log"
+    logger = logging.getLogger(f"reader-failure-{id(log_path)}")
+    logger.handlers.clear()
+    logger.propagate = False
+    handler = logging.FileHandler(log_path, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("state=%(state)s | %(message)s"))
+    logger.addHandler(handler)
+    capture = FakeCapture(
+        frames=1,
+        timestamps=[0.0],
+        fps=20.0,
+        frame_count=5,
+        failure_position=1,
+    )
+
+    try:
+        _run_reader(monkeypatch, tmp_path, capture, logger=logger)
+    finally:
+        handler.close()
+        logger.handlers.clear()
+
+    log_text = log_path.read_text(encoding="utf-8")
+    assert "Decode failure before end of local video" in log_text
+    assert "state=FAILED" in log_text
+
+
 def test_unknown_frame_count_without_ratio_retries_then_fails(monkeypatch, tmp_path) -> None:
     capture = FakeCapture(
         frames=1,

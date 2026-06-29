@@ -6,6 +6,7 @@ import threading
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -46,14 +47,25 @@ class FakePrimaryQueue:
 class FakePrimaryContext:
     def __init__(self, stream_id: str) -> None:
         self.stream_id = stream_id
-        self.state = StreamState.ACTIVE
+        self.lock = threading.RLock()
+        self.reset_count = 0
+        self.tracker_token = object()
+        self.counter_token = object()
+        self.latest_frame = None
+        self.reset_runtime()
+
+    def reset_runtime(self) -> None:
+        self.state = StreamState.CREATED
         self.metrics = FakePrimaryMetrics()
         self.queue = FakePrimaryQueue()
         self.actual_backend = None
         self.actual_device = None
         self.actual_provider = None
         self.error = None
-        self.lock = threading.RLock()
+        self.tracker_token = object()
+        self.counter_token = object()
+        self.latest_frame = None
+        self.reset_count += 1
 
 
 class FakePrimaryClock:
@@ -69,6 +81,20 @@ def _advance_primary_context(context: FakePrimaryContext) -> None:
     context.metrics.inference_latency_total_ms += 4.0
     context.metrics.end_to_end_latency_total_ms += 8.0
     context.queue.received += 1
+
+
+def _mark_primary_ready(
+    context: FakePrimaryContext,
+    *,
+    backend: str = "pytorch",
+    device: str = "cpu",
+    provider: str | None = None,
+) -> None:
+    context.state = StreamState.ACTIVE
+    context.metrics.processed_frames = max(context.metrics.processed_frames, 1)
+    context.actual_backend = backend
+    context.actual_device = device
+    context.actual_provider = provider
 
 
 def _run_fake_primary(
@@ -89,6 +115,11 @@ def _run_fake_primary(
     class FakeEngine:
         def __init__(self, *_args, **_kwargs) -> None:
             self.contexts_by_id: dict[str, FakePrimaryContext] = {}
+            self.start_all_calls = 0
+            self.stop_all_calls = 0
+            self.start_times: list[float] = []
+            self.stop_times: list[float] = []
+            self.all_stopped_before_restart: list[bool] = []
             engine_holder["engine"] = self
 
         def add_stream(self, _path: str) -> str:
@@ -97,7 +128,25 @@ def _run_fake_primary(
             return stream_id
 
         def start_all(self) -> None:
-            updater(self, clock.now, 0.0)
+            self.start_all_calls += 1
+            self.start_times.append(clock.now)
+            if self.start_all_calls > 1:
+                self.all_stopped_before_restart.append(
+                    all(
+                        context.state is StreamState.STOPPED
+                        for context in self.contexts_by_id.values()
+                    )
+                )
+                for context in self.contexts_by_id.values():
+                    context.reset_runtime()
+            updater(self, clock.now, 0.0, "start_all")
+
+        def stop_all(self) -> None:
+            self.stop_all_calls += 1
+            self.stop_times.append(clock.now)
+            for context in self.contexts_by_id.values():
+                context.state = StreamState.STOPPED
+            updater(self, clock.now, 0.0, "stop_all")
 
         def get(self, stream_id: str) -> FakePrimaryContext:
             return self.contexts_by_id[stream_id]
@@ -107,7 +156,7 @@ def _run_fake_primary(
 
     def sleep(seconds: float) -> None:
         clock.now += seconds
-        updater(engine_holder["engine"], clock.now, seconds)
+        updater(engine_holder["engine"], clock.now, seconds, "sleep")
 
     monkeypatch.setattr(benchmark, "_primary_duration_failure", lambda *_args: None)
     monkeypatch.setattr(
@@ -284,7 +333,7 @@ def test_primary_window_zero_denominators_do_not_produce_nan() -> None:
 def test_insufficient_known_primary_video_duration_fails_clearly(monkeypatch, tmp_path) -> None:
     from scripts import benchmark
 
-    monkeypatch.setattr(benchmark, "_known_video_duration_seconds", lambda _path: 1.0)
+    monkeypatch.setattr(benchmark, "_known_video_frame_info", lambda _path: (30, 10.0))
     config = types.SimpleNamespace(
         model=types.SimpleNamespace(confidence=0.35, iou=0.5, person_class_id=0),
     )
@@ -303,7 +352,7 @@ def test_insufficient_known_primary_video_duration_fails_clearly(monkeypatch, tm
     )
 
     assert result["status"] == "failed"
-    assert "shorter than required" in result["reason"]
+    assert "shorter than required warmup+measured frame count" in result["reason"]
 
 
 def test_direct_scenario_times_only_infer_batch(monkeypatch, tmp_path: Path) -> None:
@@ -362,17 +411,15 @@ def test_direct_scenario_times_only_infer_batch(monkeypatch, tmp_path: Path) -> 
 
 
 def test_primary_readiness_waits_for_all_streams(monkeypatch, tmp_path: Path) -> None:
-    def updater(engine, now: float, _seconds: float) -> None:
+    def updater(engine, now: float, _seconds: float, event: str) -> None:
+        if event == "stop_all":
+            return
         first = engine.contexts_by_id.get("stream-0")
         second = engine.contexts_by_id.get("stream-1")
         if first and now >= 0.05:
-            first.metrics.processed_frames = max(first.metrics.processed_frames, 1)
-            first.actual_backend = "pytorch"
-            first.actual_device = "cpu"
+            _mark_primary_ready(first)
         if second and now >= 0.15:
-            second.metrics.processed_frames = max(second.metrics.processed_frames, 1)
-            second.actual_backend = "pytorch"
-            second.actual_device = "cpu"
+            _mark_primary_ready(second)
         if now > 0.15:
             for context in engine.contexts_by_id.values():
                 _advance_primary_context(context)
@@ -383,18 +430,47 @@ def test_primary_readiness_waits_for_all_streams(monkeypatch, tmp_path: Path) ->
     assert clock.now >= 0.35
 
 
+def test_primary_rewinds_after_readiness_before_timed_warmup(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    snapshot_times: list[float] = []
+
+    def updater(engine, _now: float, seconds: float, event: str) -> None:
+        if event == "stop_all":
+            return
+        for context in engine.contexts_by_id.values():
+            _mark_primary_ready(context)
+            if seconds > 0:
+                _advance_primary_context(context)
+    result, clock, engine = _run_fake_primary(
+        monkeypatch,
+        tmp_path,
+        updater,
+        warmup_seconds=0.1,
+        measured_seconds=0.1,
+        snapshot_times=snapshot_times,
+    )
+
+    assert result["status"] == "ok"
+    assert engine.stop_all_calls == 1
+    assert engine.start_all_calls == 2
+    assert engine.all_stopped_before_restart == [True]
+    assert snapshot_times[0] == engine.start_times[1] + 0.1
+
+
 def test_primary_model_loading_time_is_excluded_from_warmup(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     snapshot_times: list[float] = []
 
-    def updater(engine, now: float, _seconds: float) -> None:
+    def updater(engine, now: float, _seconds: float, event: str) -> None:
+        if event == "stop_all":
+            return
         if now >= 0.2:
             for context in engine.contexts_by_id.values():
-                context.metrics.processed_frames = max(context.metrics.processed_frames, 1)
-                context.actual_backend = "pytorch"
-                context.actual_device = "cpu"
+                _mark_primary_ready(context)
                 _advance_primary_context(context)
 
     result, _clock, _engine = _run_fake_primary(
@@ -410,33 +486,91 @@ def test_primary_model_loading_time_is_excluded_from_warmup(
     assert min(snapshot_times[:2]) >= 0.4
 
 
+def test_primary_phase_a_runtime_does_not_pollute_measured_window(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    def updater(engine, _now: float, seconds: float, event: str) -> None:
+        if event == "stop_all":
+            return
+        for context in engine.contexts_by_id.values():
+            if engine.start_all_calls == 1:
+                _mark_primary_ready(context, backend="phase-a", device="phase-a-device")
+                context.phase_a_tracker_token = context.tracker_token
+                context.phase_a_counter_token = context.counter_token
+                context.metrics.processed_frames = 100
+                context.queue.received = 100
+                context.queue.dropped = 90
+                context.latest_frame = object()
+            else:
+                _mark_primary_ready(context)
+                if seconds > 0:
+                    _advance_primary_context(context)
+
+    result, _clock, engine = _run_fake_primary(monkeypatch, tmp_path, updater)
+
+    assert result["status"] == "ok"
+    assert result["actual_backend"] == "pytorch"
+    assert result["actual_device"] == "cpu"
+    assert all(context.reset_count >= 2 for context in engine.contexts_by_id.values())
+    assert all(
+        context.tracker_token is not context.phase_a_tracker_token
+        for context in engine.contexts_by_id.values()
+    )
+    assert all(
+        context.counter_token is not context.phase_a_counter_token
+        for context in engine.contexts_by_id.values()
+    )
+    assert all(value < 100 for value in result["processed_frames_per_stream"].values())
+    assert result["dropped_frame_rate"] == 0.0
+
+
 def test_primary_zero_frame_stream_fails_after_measured_window(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    def updater(engine, _now: float, seconds: float) -> None:
+    def updater(engine, _now: float, seconds: float, event: str) -> None:
+        if event == "stop_all":
+            return
         for context in engine.contexts_by_id.values():
-            context.metrics.processed_frames = max(context.metrics.processed_frames, 1)
-            context.actual_backend = "pytorch"
-            context.actual_device = "cpu"
+            _mark_primary_ready(context)
         if seconds > 0:
             _advance_primary_context(engine.contexts_by_id["stream-0"])
 
     result, _clock, _engine = _run_fake_primary(monkeypatch, tmp_path, updater)
 
     assert result["status"] == "failed"
+    assert result["phase"] == "measurement_validation"
     assert result["failed_streams"][0]["stream_id"] == "stream-1"
     assert result["failed_streams"][0]["processed_frames_delta"] == 0
 
 
-def test_primary_failed_stream_fails_before_readiness(monkeypatch, tmp_path: Path) -> None:
-    def updater(engine, _now: float, _seconds: float) -> None:
+def test_primary_eof_during_startup_readiness_fails(monkeypatch, tmp_path: Path) -> None:
+    def updater(engine, _now: float, _seconds: float, event: str) -> None:
+        if event == "stop_all":
+            return
         first = engine.contexts_by_id.get("stream-0")
         second = engine.contexts_by_id.get("stream-1")
         if first:
-            first.metrics.processed_frames = 1
-            first.actual_backend = "pytorch"
-            first.actual_device = "cpu"
+            _mark_primary_ready(first)
+        if second:
+            second.state = StreamState.EOF
+
+    result, _clock, _engine = _run_fake_primary(monkeypatch, tmp_path, updater)
+
+    assert result["status"] == "failed"
+    assert result["phase"] == "startup_readiness"
+    assert "EOF before startup readiness" in result["reason"]
+
+
+def test_primary_failed_stream_fails_before_readiness(monkeypatch, tmp_path: Path) -> None:
+    def updater(engine, _now: float, _seconds: float, event: str) -> None:
+        if event == "stop_all":
+            return
+        first = engine.contexts_by_id.get("stream-0")
+        second = engine.contexts_by_id.get("stream-1")
+        if first:
+            _mark_primary_ready(first)
         if second:
             second.state = StreamState.FAILED
             second.error = "decode failure"
@@ -444,32 +578,151 @@ def test_primary_failed_stream_fails_before_readiness(monkeypatch, tmp_path: Pat
     result, _clock, _engine = _run_fake_primary(monkeypatch, tmp_path, updater)
 
     assert result["status"] == "failed"
+    assert result["phase"] == "startup_readiness"
     assert "failed before startup readiness" in result["reason"]
     assert result["failed_streams"][0]["stream_id"] == "stream-1"
 
 
+def test_primary_rewind_requires_all_streams_stopped(monkeypatch, tmp_path: Path) -> None:
+    def updater(engine, _now: float, _seconds: float, event: str) -> None:
+        if event == "stop_all":
+            engine.contexts_by_id["stream-1"].state = StreamState.ACTIVE
+            return
+        for context in engine.contexts_by_id.values():
+            _mark_primary_ready(context)
+
+    result, _clock, _engine = _run_fake_primary(monkeypatch, tmp_path, updater)
+
+    assert result["status"] == "failed"
+    assert result["phase"] == "rewind"
+    assert result["failed_streams"][0]["stream_id"] == "stream-1"
+
+
+@pytest.mark.parametrize("state", [StreamState.EOF, StreamState.FAILED])
+def test_primary_warmup_fails_on_terminal_stream_state(
+    monkeypatch,
+    tmp_path: Path,
+    state: StreamState,
+) -> None:
+    def updater(engine, now: float, _seconds: float, event: str) -> None:
+        if event == "stop_all":
+            return
+        for context in engine.contexts_by_id.values():
+            _mark_primary_ready(context)
+        if engine.start_all_calls == 2 and event == "sleep" and now >= 0.05:
+            engine.contexts_by_id["stream-1"].state = state
+
+    result, _clock, _engine = _run_fake_primary(monkeypatch, tmp_path, updater)
+
+    assert result["status"] == "failed"
+    assert result["phase"] == "warmup"
+    assert result["failed_streams"][0]["stream_id"] == "stream-1"
+
+
+def test_primary_warmup_deadline_requires_ready_active_streams(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    def updater(engine, _now: float, _seconds: float, event: str) -> None:
+        if event == "stop_all":
+            return
+        _mark_primary_ready(engine.contexts_by_id["stream-0"])
+        second = engine.contexts_by_id["stream-1"]
+        if engine.start_all_calls == 1:
+            _mark_primary_ready(second)
+        else:
+            second.state = StreamState.CONNECTING
+
+    result, _clock, _engine = _run_fake_primary(monkeypatch, tmp_path, updater)
+
+    assert result["status"] == "failed"
+    assert result["phase"] == "warmup"
+    assert result["failed_streams"][0]["state"] == StreamState.CONNECTING.value
+
+
+@pytest.mark.parametrize(
+    "state",
+    [StreamState.EOF, StreamState.FAILED, StreamState.STOPPED],
+)
+def test_primary_measurement_fails_on_terminal_stream_state(
+    monkeypatch,
+    tmp_path: Path,
+    state: StreamState,
+) -> None:
+    def updater(engine, now: float, seconds: float, event: str) -> None:
+        if event == "stop_all":
+            return
+        for context in engine.contexts_by_id.values():
+            _mark_primary_ready(context)
+            if seconds > 0:
+                _advance_primary_context(context)
+        if engine.start_all_calls == 2 and event == "sleep" and now > 0.1:
+            engine.contexts_by_id["stream-1"].state = state
+
+    result, _clock, _engine = _run_fake_primary(monkeypatch, tmp_path, updater)
+
+    assert result["status"] == "failed"
+    assert result["phase"] == "measurement"
+    assert result["failed_streams"][0]["stream_id"] == "stream-1"
+
+
 def test_primary_backend_device_disagreement_fails(monkeypatch, tmp_path: Path) -> None:
-    def updater(engine, _now: float, seconds: float) -> None:
+    def updater(engine, _now: float, seconds: float, event: str) -> None:
+        if event == "stop_all":
+            return
         backends = ["pytorch", "onnxruntime"]
         for index, context in enumerate(engine.contexts_by_id.values()):
-            context.metrics.processed_frames = max(context.metrics.processed_frames, 1)
-            context.actual_backend = backends[index]
-            context.actual_device = "cpu"
+            _mark_primary_ready(context, backend=backends[index])
             if seconds > 0:
                 _advance_primary_context(context)
 
     result, _clock, _engine = _run_fake_primary(monkeypatch, tmp_path, updater)
 
     assert result["status"] == "failed"
-    assert "different actual backend/device" in result["reason"]
+    assert result["phase"] == "measurement_validation"
+    assert "different actual backend/device/provider" in result["reason"]
+
+
+def test_primary_device_disagreement_fails(monkeypatch, tmp_path: Path) -> None:
+    def updater(engine, _now: float, seconds: float, event: str) -> None:
+        if event == "stop_all":
+            return
+        devices = ["cpu", "cuda:0"]
+        for index, context in enumerate(engine.contexts_by_id.values()):
+            _mark_primary_ready(context, device=devices[index])
+            if seconds > 0:
+                _advance_primary_context(context)
+
+    result, _clock, _engine = _run_fake_primary(monkeypatch, tmp_path, updater)
+
+    assert result["status"] == "failed"
+    assert result["phase"] == "measurement_validation"
+    assert "different actual backend/device/provider" in result["reason"]
+
+
+def test_primary_provider_disagreement_fails(monkeypatch, tmp_path: Path) -> None:
+    def updater(engine, _now: float, seconds: float, event: str) -> None:
+        if event == "stop_all":
+            return
+        providers = ["CPUExecutionProvider", None]
+        for index, context in enumerate(engine.contexts_by_id.values()):
+            _mark_primary_ready(context, provider=providers[index])
+            if seconds > 0:
+                _advance_primary_context(context)
+
+    result, _clock, _engine = _run_fake_primary(monkeypatch, tmp_path, updater)
+
+    assert result["status"] == "failed"
+    assert result["phase"] == "measurement_validation"
+    assert "different actual backend/device/provider" in result["reason"]
 
 
 def test_primary_two_valid_streams_produce_ok(monkeypatch, tmp_path: Path) -> None:
-    def updater(engine, _now: float, seconds: float) -> None:
+    def updater(engine, _now: float, seconds: float, event: str) -> None:
+        if event == "stop_all":
+            return
         for context in engine.contexts_by_id.values():
-            context.metrics.processed_frames = max(context.metrics.processed_frames, 1)
-            context.actual_backend = "pytorch"
-            context.actual_device = "cpu"
+            _mark_primary_ready(context)
             if seconds > 0:
                 _advance_primary_context(context)
 
@@ -480,8 +733,41 @@ def test_primary_two_valid_streams_produce_ok(monkeypatch, tmp_path: Path) -> No
     assert result["per_stream"]["stream-1"]["actual_device"] == "cpu"
 
 
+def test_primary_duration_precheck_requires_extra_frame(monkeypatch, tmp_path: Path) -> None:
+    from scripts import benchmark
+
+    monkeypatch.setattr(benchmark, "_known_video_frame_info", lambda _path: (30, 10.0))
+
+    result = benchmark._primary_duration_failure([tmp_path / "video.avi"], 3.0)
+
+    assert result is not None
+    assert "frame count 31" in result
+
+
+def test_primary_duration_precheck_allows_required_extra_frame(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from scripts import benchmark
+
+    monkeypatch.setattr(benchmark, "_known_video_frame_info", lambda _path: (31, 10.0))
+
+    assert benchmark._primary_duration_failure([tmp_path / "video.avi"], 3.0) is None
+
+
+def test_primary_duration_precheck_allows_unknown_duration(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from scripts import benchmark
+
+    monkeypatch.setattr(benchmark, "_known_video_frame_info", lambda _path: None)
+
+    assert benchmark._primary_duration_failure([tmp_path / "video.avi"], 3.0) is None
+
+
 def test_primary_readiness_timeout_fails_clearly(monkeypatch, tmp_path: Path) -> None:
-    def updater(_engine, _now: float, _seconds: float) -> None:
+    def updater(_engine, _now: float, _seconds: float, _event: str) -> None:
         pass
 
     result, _clock, _engine = _run_fake_primary(
@@ -492,6 +778,7 @@ def test_primary_readiness_timeout_fails_clearly(monkeypatch, tmp_path: Path) ->
     )
 
     assert result["status"] == "failed"
+    assert result["phase"] == "startup_readiness"
     assert "Startup readiness timeout" in result["reason"]
 
 

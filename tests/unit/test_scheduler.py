@@ -26,9 +26,10 @@ class FakeClock:
 
 
 class FakeStopEvent:
-    def __init__(self, clock: FakeClock, on_wait=None) -> None:
+    def __init__(self, clock: FakeClock, on_wait=None, *, interrupt_on_wait: bool = False) -> None:
         self.clock = clock
         self.on_wait = on_wait
+        self.interrupt_on_wait = interrupt_on_wait
         self.waits: list[float] = []
 
     def is_set(self) -> bool:
@@ -39,7 +40,7 @@ class FakeStopEvent:
         self.clock.advance(timeout)
         if self.on_wait is not None:
             self.on_wait()
-        return False
+        return self.interrupt_on_wait
 
 
 class ScriptedQueue:
@@ -53,6 +54,20 @@ class ScriptedQueue:
         if not self.packets:
             raise queue.Empty
         return self.packets.pop(0)
+
+
+class AdvancingQueue(ScriptedQueue):
+    def __init__(self, clock: FakeClock, advance_seconds: float, packets=None) -> None:
+        super().__init__(packets)
+        self.clock = clock
+        self.advance_seconds = advance_seconds
+        self.advanced = False
+
+    def get_nowait(self):
+        if not self.advanced:
+            self.clock.advance(self.advance_seconds)
+            self.advanced = True
+        return super().get_nowait()
 
 
 def _packet(index: int, runtime_generation: int = 0) -> FramePacket:
@@ -74,7 +89,14 @@ def _context(stream_id: str, scripted_queue: ScriptedQueue) -> StreamContext:
     return context
 
 
-def _scheduler(contexts, clock: FakeClock, stop_event: FakeStopEvent, monkeypatch):
+def _scheduler(
+    contexts,
+    clock: FakeClock,
+    stop_event: FakeStopEvent,
+    monkeypatch,
+    *,
+    max_batch_wait_ms: int = 10,
+):
     import vision_track.scheduler as scheduler_module
 
     monkeypatch.setattr(scheduler_module.time, "perf_counter", clock)
@@ -84,7 +106,7 @@ def _scheduler(contexts, clock: FakeClock, stop_event: FakeStopEvent, monkeypatc
         logger=logging.getLogger("test"),
         idle_seconds=0.001,
         max_batch_size=2,
-        max_batch_wait_ms=10,
+        max_batch_wait_ms=max_batch_wait_ms,
     )
     scheduler._stop_event = stop_event
     return scheduler
@@ -130,6 +152,108 @@ def test_take_batch_returns_when_deadline_expires(monkeypatch) -> None:
     assert [context.stream_id for context, _ in batch] == ["first"]
     assert clock.now >= 0.01
     assert scheduler._stop_event.waits
+
+
+def test_take_batch_no_valid_first_packet_returns_without_batch_wait(monkeypatch) -> None:
+    clock = FakeClock()
+    contexts = [
+        _context("first", ScriptedQueue()),
+        _context("second", ScriptedQueue()),
+    ]
+    stop_event = FakeStopEvent(clock)
+    scheduler = _scheduler(contexts, clock, stop_event, monkeypatch)
+
+    batch = scheduler._take_batch()
+
+    assert batch == []
+    assert clock.now == 0.0
+    assert stop_event.waits == []
+
+
+def test_take_batch_first_packet_available_after_clock_advance_gets_full_window(
+    monkeypatch,
+) -> None:
+    clock = FakeClock()
+    first_queue = AdvancingQueue(clock, 0.009, [_packet(1)])
+    second_queue = ScriptedQueue()
+    contexts = [_context("first", first_queue), _context("second", second_queue)]
+
+    def add_second_at_18ms() -> None:
+        if clock.now >= 0.018 and not second_queue.packets:
+            second_queue.put(_packet(2))
+
+    scheduler = _scheduler(
+        contexts,
+        clock,
+        FakeStopEvent(clock, add_second_at_18ms),
+        monkeypatch,
+    )
+
+    batch = scheduler._take_batch()
+
+    assert [context.stream_id for context, _ in batch] == ["first", "second"]
+    assert clock.now <= 0.019
+
+
+def test_take_batch_stale_packet_does_not_start_batch_deadline(monkeypatch) -> None:
+    clock = FakeClock()
+    context = _context("stale", ScriptedQueue([_packet(1, runtime_generation=0)]))
+    context.runtime_generation = 1
+    stop_event = FakeStopEvent(clock)
+    scheduler = _scheduler([context], clock, stop_event, monkeypatch)
+
+    batch = scheduler._take_batch()
+
+    assert batch == []
+    assert clock.now == 0.0
+    assert stop_event.waits == []
+
+
+def test_take_batch_inactive_context_does_not_start_batch_deadline(monkeypatch) -> None:
+    clock = FakeClock()
+    context = _context("inactive", ScriptedQueue([_packet(1)]))
+    context.force_state(StreamState.STOPPED)
+    stop_event = FakeStopEvent(clock)
+    scheduler = _scheduler([context], clock, stop_event, monkeypatch)
+
+    batch = scheduler._take_batch()
+
+    assert batch == []
+    assert clock.now == 0.0
+    assert stop_event.waits == []
+
+
+def test_take_batch_zero_wait_returns_without_additional_wait(monkeypatch) -> None:
+    clock = FakeClock()
+    contexts = [
+        _context("first", ScriptedQueue([_packet(1)])),
+        _context("second", ScriptedQueue([_packet(2)])),
+    ]
+    stop_event = FakeStopEvent(clock)
+    scheduler = _scheduler(
+        contexts,
+        clock,
+        stop_event,
+        monkeypatch,
+        max_batch_wait_ms=0,
+    )
+
+    batch = scheduler._take_batch()
+
+    assert [context.stream_id for context, _ in batch] == ["first", "second"]
+    assert stop_event.waits == []
+
+
+def test_take_batch_stop_during_batch_window_returns_promptly(monkeypatch) -> None:
+    clock = FakeClock()
+    contexts = [_context("first", ScriptedQueue([_packet(1)]))]
+    stop_event = FakeStopEvent(clock, interrupt_on_wait=True)
+    scheduler = _scheduler(contexts, clock, stop_event, monkeypatch)
+
+    batch = scheduler._take_batch()
+
+    assert [context.stream_id for context, _ in batch] == ["first"]
+    assert len(stop_event.waits) == 1
 
 
 def test_finalize_persists_actual_backend_device_and_provider(monkeypatch) -> None:
@@ -207,22 +331,6 @@ def test_take_batch_cursor_remains_valid_after_adding_stream(monkeypatch) -> Non
     scheduler._take_batch()
 
     assert 0 <= scheduler._cursor < len(contexts)
-
-
-def test_take_batch_empty_queues_respect_batch_wait(monkeypatch) -> None:
-    clock = FakeClock()
-    contexts = [
-        _context("first", ScriptedQueue()),
-        _context("second", ScriptedQueue()),
-    ]
-    stop_event = FakeStopEvent(clock)
-    scheduler = _scheduler(contexts, clock, stop_event, monkeypatch)
-
-    batch = scheduler._take_batch()
-
-    assert batch == []
-    assert clock.now >= 0.01
-    assert stop_event.waits
 
 
 def test_take_batch_drains_final_frame_from_eof_stream(monkeypatch) -> None:

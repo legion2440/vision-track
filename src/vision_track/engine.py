@@ -152,16 +152,40 @@ class ProcessingEngine:
         return identifier
 
     def _build_reader(self, context: StreamContext) -> VideoReader:
+        with context.lock:
+            captured_generation = context.runtime_generation
+            captured_source = context.source
+            stream_id = context.stream_id
+
+        def is_current() -> bool:
+            with context.lock:
+                return context.runtime_generation == captured_generation
+
+        def state_callback(state: StreamState) -> bool:
+            with context.lock:
+                if context.runtime_generation != captured_generation:
+                    return False
+                context.force_state(state)
+                return True
+
+        def error_callback(error: str | None) -> bool:
+            with context.lock:
+                if context.runtime_generation != captured_generation:
+                    return False
+                context.error = error
+                return True
+
         return VideoReader(
-            stream_id=context.stream_id,
-            source=context.source,
+            stream_id=stream_id,
+            source=captured_source,
             frame_queue=context.queue,
-            state_callback=context.force_state,
-            error_callback=context.set_error,
+            state_callback=state_callback,
+            error_callback=error_callback,
             logger=self.logger,
             reconnect_attempts=self.config.runtime.reconnect_attempts,
             reconnect_backoff_seconds=self.config.runtime.reconnect_backoff_seconds,
-            runtime_generation=context.runtime_generation,
+            runtime_generation=captured_generation,
+            is_current_callback=is_current,
         )
 
     def start(self, stream_id: str) -> None:

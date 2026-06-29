@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Sequence
 
 import numpy as np
+import pytest
 
 from vision_track.configuration import load_config
 from vision_track.context import StreamContext
@@ -56,6 +57,38 @@ class NoopReader:
 
     def stop(self, timeout: float = 3.0) -> None:
         self.stopped = True
+
+
+class ReaderCapture:
+    def __init__(self) -> None:
+        self.released = False
+
+    def isOpened(self) -> bool:
+        return True
+
+    def release(self) -> None:
+        self.released = True
+
+    def read(self):
+        return True, np.zeros((4, 4, 3), dtype=np.uint8)
+
+    def get(self, _prop: int) -> float:
+        return 30.0
+
+
+class DelayedOpen:
+    def __init__(self, capture: ReaderCapture | None = None, exc: Exception | None = None) -> None:
+        self.capture = capture or ReaderCapture()
+        self.exc = exc
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def __call__(self):
+        self.started.set()
+        self.release.wait(timeout=2.0)
+        if self.exc is not None:
+            raise self.exc
+        return self.capture
 
 
 class BlockingDetector(DetectorBackend):
@@ -143,6 +176,14 @@ def _engine(tmp_path: Path, detector: DetectorBackend) -> ProcessingEngine:
     )
 
 
+def _reader_for_context(tmp_path: Path):
+    engine = _engine(tmp_path, ImmediateDetector())
+    stream_id = engine.add_stream("callback.mp4")
+    context = engine.get(stream_id)
+    reader = engine._build_reader(context)
+    return engine, context, reader
+
+
 def _prepare_context(engine: ProcessingEngine, stream_id: str) -> StreamContext:
     context = engine.get(stream_id)
     context.force_state(StreamState.ACTIVE)
@@ -168,6 +209,115 @@ def _finish_blocked_scheduler(
     assert _wait_until(detector.finished.is_set)
     time.sleep(0.05)
     engine.scheduler.stop()
+
+
+def test_current_generation_state_callback_applies_normally(tmp_path: Path) -> None:
+    engine, context, reader = _reader_for_context(tmp_path)
+    try:
+        assert reader.state_callback(StreamState.ACTIVE) is True
+        assert context.state is StreamState.ACTIVE
+    finally:
+        engine.shutdown()
+
+
+def test_current_generation_error_callback_applies_normally(tmp_path: Path) -> None:
+    engine, context, reader = _reader_for_context(tmp_path)
+    try:
+        assert reader.error_callback("current error") is True
+        assert context.error == "current error"
+    finally:
+        engine.shutdown()
+
+
+@pytest.mark.parametrize(
+    "state",
+    [StreamState.ACTIVE, StreamState.EOF, StreamState.FAILED, StreamState.STOPPED],
+)
+def test_stale_state_callback_cannot_mutate_context(
+    tmp_path: Path,
+    state: StreamState,
+) -> None:
+    engine, context, reader = _reader_for_context(tmp_path)
+    try:
+        with context.lock:
+            context.runtime_generation += 1
+            context.force_state(StreamState.CREATED)
+
+        assert reader.state_callback(state) is False
+        assert context.state is StreamState.CREATED
+    finally:
+        engine.shutdown()
+
+
+def test_stale_error_callback_cannot_overwrite_current_error(tmp_path: Path) -> None:
+    engine, context, reader = _reader_for_context(tmp_path)
+    try:
+        with context.lock:
+            context.runtime_generation += 1
+            context.error = "current error"
+
+        assert reader.error_callback("old error") is False
+        assert context.error == "current error"
+    finally:
+        engine.shutdown()
+
+
+def test_stale_error_callback_cannot_clear_current_error(tmp_path: Path) -> None:
+    engine, context, reader = _reader_for_context(tmp_path)
+    try:
+        with context.lock:
+            context.runtime_generation += 1
+            context.error = "current error"
+
+        assert reader.error_callback(None) is False
+        assert context.error == "current error"
+    finally:
+        engine.shutdown()
+
+
+def test_delayed_open_after_stop_cannot_make_old_reader_active(tmp_path: Path) -> None:
+    engine, context, reader = _reader_for_context(tmp_path)
+    delayed_open = DelayedOpen()
+    reader._open = delayed_open
+    try:
+        reader.start()
+        assert delayed_open.started.wait(timeout=2.0)
+        with context.lock:
+            context.runtime_generation += 1
+            context.force_state(StreamState.STOPPED)
+        reader.stop(timeout=0.01)
+        delayed_open.release.set()
+        assert _wait_until(lambda: not reader.running)
+
+        assert context.state is StreamState.STOPPED
+        assert context.queue.received == 0
+        assert delayed_open.capture.released
+    finally:
+        reader.stop(timeout=0.01)
+        engine.shutdown()
+
+
+def test_delayed_open_failure_after_invalidation_is_silent(tmp_path: Path) -> None:
+    engine, context, reader = _reader_for_context(tmp_path)
+    delayed_open = DelayedOpen(exc=OSError("old open failure"))
+    reader._open = delayed_open
+    log_path = tmp_path / "app_errors.log"
+    try:
+        reader.start()
+        assert delayed_open.started.wait(timeout=2.0)
+        with context.lock:
+            context.runtime_generation += 1
+            context.force_state(StreamState.STOPPED)
+            context.error = "current error"
+        delayed_open.release.set()
+        assert _wait_until(lambda: not reader.running)
+
+        assert context.state is StreamState.STOPPED
+        assert context.error == "current error"
+        assert not log_path.exists() or log_path.read_text(encoding="utf-8") == ""
+    finally:
+        reader.stop(timeout=0.01)
+        engine.shutdown()
 
 
 def test_old_inference_after_stop_cannot_update_runtime(

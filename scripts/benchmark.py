@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import platform
 import statistics
 import sys
@@ -132,7 +133,7 @@ def _capture_fps(capture: cv2.VideoCapture) -> float:
     return value if np.isfinite(value) and 0 < value <= 240 else 30.0
 
 
-def _known_video_duration_seconds(path: Path) -> float | None:
+def _known_video_frame_info(path: Path) -> tuple[int, float] | None:
     capture = cv2.VideoCapture(str(path))
     if not capture.isOpened():
         return None
@@ -141,7 +142,7 @@ def _known_video_duration_seconds(path: Path) -> float | None:
         fps = float(capture.get(cv2.CAP_PROP_FPS))
         if not (_finite_positive(frame_count) and _finite_positive(fps) and fps <= 240):
             return None
-        return frame_count / fps
+        return int(frame_count), float(fps)
     finally:
         capture.release()
 
@@ -151,11 +152,15 @@ def _primary_duration_failure(
     required_seconds: float,
 ) -> str | None:
     for path in videos:
-        duration = _known_video_duration_seconds(path)
-        if duration is not None and duration < required_seconds:
+        frame_info = _known_video_frame_info(path)
+        if frame_info is None:
+            continue
+        frame_count, fps = frame_info
+        required_frames = math.ceil(required_seconds * fps) + 1
+        if frame_count < required_frames:
             return (
-                f"Primary input {path} is {duration:.2f}s, shorter than required "
-                f"warmup+measured duration {required_seconds:.2f}s"
+                f"Primary input {path} has {frame_count} frames at {fps:.2f} FPS, "
+                f"shorter than required warmup+measured frame count {required_frames}"
             )
     return None
 
@@ -215,17 +220,45 @@ def _divide_or_zero(numerator: float, denominator: float) -> float:
     return numerator / denominator if denominator > 0 else 0.0
 
 
-def _readiness_record(context) -> dict[str, object]:
+def _state_value(state) -> str:
+    return state.value if isinstance(state, StreamState) else str(state)
+
+
+def _stream_record(
+    context,
+    *,
+    elapsed_seconds: float,
+    processed_frames_delta: int | None = None,
+) -> dict[str, object]:
     with context.lock:
-        return {
+        record = {
             "stream_id": context.stream_id,
-            "state": context.state.value,
+            "state": _state_value(context.state),
             "processed_frames": context.metrics.processed_frames,
             "actual_backend": context.actual_backend,
             "actual_device": context.actual_device,
             "actual_provider": context.actual_provider,
             "error": context.error,
+            "elapsed_seconds": elapsed_seconds,
         }
+        if processed_frames_delta is not None:
+            record["processed_frames_delta"] = processed_frames_delta
+        return record
+
+
+def _stream_records(
+    engine: ProcessingEngine,
+    stream_ids: list[str],
+    phase_started: float,
+) -> list[dict[str, object]]:
+    elapsed_seconds = time.perf_counter() - phase_started
+    return [
+        _stream_record(
+            engine.get(stream_id),
+            elapsed_seconds=elapsed_seconds,
+        )
+        for stream_id in stream_ids
+    ]
 
 
 def _wait_for_primary_readiness(
@@ -233,10 +266,11 @@ def _wait_for_primary_readiness(
     stream_ids: list[str],
     startup_timeout_seconds: float,
 ) -> tuple[bool, str | None, list[dict[str, object]]]:
+    phase_started = time.perf_counter()
     deadline = time.perf_counter() + startup_timeout_seconds
     records: list[dict[str, object]] = []
     while True:
-        records = [_readiness_record(engine.get(stream_id)) for stream_id in stream_ids]
+        records = _stream_records(engine, stream_ids, phase_started)
         failed = [record for record in records if record["state"] == StreamState.FAILED.value]
         if failed:
             return False, "Primary stream failed before startup readiness", failed
@@ -252,7 +286,8 @@ def _wait_for_primary_readiness(
             return True, None, records
         if time.perf_counter() >= deadline:
             break
-        time.sleep(0.05)
+        time.sleep(min(0.05, max(0.0, deadline - time.perf_counter())))
+    records = _stream_records(engine, stream_ids, phase_started)
     return (
         False,
         f"Startup readiness timeout after {startup_timeout_seconds:.1f}s",
@@ -268,6 +303,8 @@ def _primary_failure_payload(
     backend_name: str,
     stream_count: int,
     resolution: tuple[int, int],
+    phase: str | None = None,
+    elapsed_seconds: float | None = None,
     failed_streams: list[dict[str, object]] | None = None,
     per_stream: dict[str, dict[str, object]] | None = None,
 ) -> dict:
@@ -280,8 +317,25 @@ def _primary_failure_payload(
         "streams": stream_count,
         "resolution": list(resolution),
     }
+    if phase is not None:
+        payload["phase"] = phase
+    if elapsed_seconds is not None:
+        payload["elapsed_seconds"] = elapsed_seconds
     if failed_streams is not None:
         payload["failed_streams"] = failed_streams
+        if failed_streams:
+            first = failed_streams[0]
+            for key in (
+                "stream_id",
+                "state",
+                "error",
+                "processed_frames",
+                "actual_backend",
+                "actual_device",
+                "actual_provider",
+                "elapsed_seconds",
+            ):
+                payload[key] = first.get(key)
     if per_stream is not None:
         payload["per_stream"] = per_stream
     return payload
@@ -307,6 +361,94 @@ def _primary_stream_failures(window: dict) -> list[dict[str, object]]:
                 }
             )
     return failures
+
+
+def _poll_primary_phase(
+    engine: ProcessingEngine,
+    stream_ids: list[str],
+    *,
+    phase: str,
+    phase_started: float,
+    deadline: float,
+    failure_states: set[StreamState],
+) -> list[dict[str, object]]:
+    failure_values = {state.value for state in failure_states}
+    while True:
+        records = _stream_records(engine, stream_ids, phase_started)
+        failures = [record for record in records if record["state"] in failure_values]
+        if failures:
+            return failures
+        now = time.perf_counter()
+        if now >= deadline:
+            return []
+        time.sleep(min(0.05, max(0.0, deadline - now)))
+
+
+def _warmup_validation_failures(
+    engine: ProcessingEngine,
+    stream_ids: list[str],
+    phase_started: float,
+) -> list[dict[str, object]]:
+    records = _stream_records(engine, stream_ids, phase_started)
+    return [
+        record
+        for record in records
+        if record["state"] != StreamState.ACTIVE.value
+        or int(record["processed_frames"]) <= 0
+        or record["actual_backend"] is None
+        or record["actual_device"] is None
+    ]
+
+
+def _measurement_validation_failures(
+    window: dict,
+    end_snapshots: dict[str, dict[str, object]],
+    elapsed_seconds: float,
+) -> list[dict[str, object]]:
+    failures: list[dict[str, object]] = []
+    for stream_id, item in window["per_stream"].items():
+        end = end_snapshots[stream_id]
+        if (
+            item["state"] != StreamState.ACTIVE.value
+            or item["processed_frames"] <= 0
+            or item["actual_backend"] is None
+            or item["actual_device"] is None
+        ):
+            failures.append(
+                {
+                    "stream_id": stream_id,
+                    "state": item["state"],
+                    "processed_frames": end["processed_frames"],
+                    "processed_frames_delta": item["processed_frames"],
+                    "error": item["error"],
+                    "actual_backend": item["actual_backend"],
+                    "actual_device": item["actual_device"],
+                    "actual_provider": item["actual_provider"],
+                    "elapsed_seconds": elapsed_seconds,
+                }
+            )
+    return failures
+
+
+def _window_records(
+    window: dict,
+    end_snapshots: dict[str, dict[str, object]],
+    elapsed_seconds: float,
+) -> list[dict[str, object]]:
+    return [
+        {
+            "stream_id": stream_id,
+            "state": item["state"],
+            "processed_frames": end_snapshots[stream_id]["processed_frames"],
+            "processed_frames_delta": item["processed_frames"],
+            "error": item["error"],
+            "actual_backend": item["actual_backend"],
+            "actual_device": item["actual_device"],
+            "actual_provider": item["actual_provider"],
+            "elapsed_seconds": elapsed_seconds,
+        }
+        for stream_id, item in window["per_stream"].items()
+    ]
 
 
 def summarize_primary_window(
@@ -415,74 +557,145 @@ def run_processing_engine_scenario(
                 backend_name=backend_name,
                 stream_count=len(stream_ids),
                 resolution=resolution,
+                phase="startup_readiness",
                 failed_streams=records,
             )
-        warmup_deadline = time.perf_counter() + warmup_seconds
-        while time.perf_counter() < warmup_deadline:
-            time.sleep(0.05)
+        rewind_started = time.perf_counter()
+        engine.stop_all()
+        rewind_records = _stream_records(engine, stream_ids, rewind_started)
+        not_stopped = [
+            record
+            for record in rewind_records
+            if record["state"] != StreamState.STOPPED.value
+        ]
+        if not_stopped:
+            return _primary_failure_payload(
+                name=name,
+                reason="Primary streams did not stop before benchmark rewind",
+                model_path=model_path,
+                backend_name=backend_name,
+                stream_count=len(stream_ids),
+                resolution=resolution,
+                phase="rewind",
+                failed_streams=not_stopped,
+            )
+
+        benchmark_origin = time.perf_counter()
+        engine.start_all()
+        warmup_deadline = benchmark_origin + warmup_seconds
+        warmup_started = benchmark_origin
+        warmup_failures = _poll_primary_phase(
+            engine,
+            stream_ids,
+            phase="warmup",
+            phase_started=warmup_started,
+            deadline=warmup_deadline,
+            failure_states={StreamState.FAILED, StreamState.EOF},
+        )
+        if warmup_failures:
+            return _primary_failure_payload(
+                name=name,
+                reason="Primary stream failed or reached EOF during warmup",
+                model_path=model_path,
+                backend_name=backend_name,
+                stream_count=len(stream_ids),
+                resolution=resolution,
+                phase="warmup",
+                failed_streams=warmup_failures,
+            )
+        warmup_validation_failures = _warmup_validation_failures(
+            engine,
+            stream_ids,
+            warmup_started,
+        )
+        if warmup_validation_failures:
+            return _primary_failure_payload(
+                name=name,
+                reason="Primary stream did not become active and ready by warmup deadline",
+                model_path=model_path,
+                backend_name=backend_name,
+                stream_count=len(stream_ids),
+                resolution=resolution,
+                phase="warmup",
+                failed_streams=warmup_validation_failures,
+            )
         start_snapshots = {
             stream_id: _snapshot_context(engine.get(stream_id))
             for stream_id in stream_ids
         }
-        started = time.perf_counter()
-        deadline = started + measured_seconds
-        while time.perf_counter() < deadline:
-            time.sleep(0.05)
-        elapsed = time.perf_counter() - started
+        measurement_deadline = warmup_deadline + measured_seconds
+        measurement_started = warmup_deadline
+        measurement_failures = _poll_primary_phase(
+            engine,
+            stream_ids,
+            phase="measurement",
+            phase_started=measurement_started,
+            deadline=measurement_deadline,
+            failure_states={StreamState.FAILED, StreamState.EOF, StreamState.STOPPED},
+        )
+        if measurement_failures:
+            return _primary_failure_payload(
+                name=name,
+                reason="Primary stream failed, stopped, or reached EOF during measurement",
+                model_path=model_path,
+                backend_name=backend_name,
+                stream_count=len(stream_ids),
+                resolution=resolution,
+                phase="measurement",
+                failed_streams=measurement_failures,
+            )
+        elapsed = time.perf_counter() - measurement_started
         contexts = [engine.get(stream_id) for stream_id in stream_ids]
         end_snapshots = {
             context.stream_id: _snapshot_context(context)
             for context in contexts
         }
         window = summarize_primary_window(start_snapshots, end_snapshots, elapsed)
-        failed_streams = _primary_stream_failures(window)
+        failed_streams = _measurement_validation_failures(
+            window,
+            end_snapshots,
+            elapsed,
+        )
         if failed_streams:
             return _primary_failure_payload(
                 name=name,
-                reason="One or more primary streams did not produce valid measured frames",
+                reason="One or more primary streams did not remain active with valid measured frames",
                 model_path=model_path,
                 backend_name=backend_name,
                 stream_count=len(stream_ids),
                 resolution=resolution,
+                phase="measurement_validation",
+                elapsed_seconds=elapsed,
                 failed_streams=failed_streams,
                 per_stream=window["per_stream"],
             )
-        backend_device_pairs = {
-            (item["actual_backend"], item["actual_device"])
+        runtime_tuples = {
+            (item["actual_backend"], item["actual_device"], item["actual_provider"])
             for item in window["per_stream"].values()
         }
-        if len(backend_device_pairs) != 1:
+        if len(runtime_tuples) != 1:
             return _primary_failure_payload(
                 name=name,
-                reason="Primary streams reported different actual backend/device values",
+                reason="Primary streams reported different actual backend/device/provider values",
                 model_path=model_path,
                 backend_name=backend_name,
                 stream_count=len(stream_ids),
                 resolution=resolution,
-                failed_streams=[
-                    {
-                        "stream_id": stream_id,
-                        "state": item["state"],
-                        "processed_frames_delta": item["processed_frames"],
-                        "error": item["error"],
-                        "actual_backend": item["actual_backend"],
-                        "actual_device": item["actual_device"],
-                        "actual_provider": item["actual_provider"],
-                    }
-                    for stream_id, item in window["per_stream"].items()
-                ],
+                phase="measurement_validation",
+                elapsed_seconds=elapsed,
+                failed_streams=_window_records(window, end_snapshots, elapsed),
                 per_stream=window["per_stream"],
             )
-        first_context = contexts[0]
+        actual_backend, actual_device, actual_provider = next(iter(runtime_tuples))
         return {
             "name": name,
             "status": "ok",
             "model": str(model_path),
             "backend": backend_name,
-            "actual_backend": first_context.actual_backend or detector.name,
-            "provider": first_context.actual_provider,
+            "actual_backend": actual_backend,
+            "provider": actual_provider,
             "requested_device": device.kind,
-            "actual_device": first_context.actual_device or device.torch_device,
+            "actual_device": actual_device,
             "gpu_name": device.name if device.kind == "cuda" else None,
             "streams": len(stream_ids),
             "resolution": list(resolution),
