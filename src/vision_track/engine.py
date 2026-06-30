@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import atexit
 import threading
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .configuration import AppConfig, load_config, resolve_project_path
@@ -14,9 +14,19 @@ from .lifecycle import StreamState
 from .logging_utils import configure_logging, log_stream_error
 from .queues import FramePacket
 from .readers import VideoReader
+from .rendering import render_frame
 from .scheduler import SharedInferenceScheduler
 from .sources import VideoSource, new_stream_id
 from .tracking import ByteTrackSettings, StreamTracker
+
+
+@dataclass(frozen=True)
+class StreamRestoreSnapshot:
+    stream_id: str
+    source: VideoSource
+    options: StreamOptions
+    tracker_settings: ByteTrackSettings
+    was_running: bool
 
 
 class ProcessingEngine:
@@ -90,11 +100,32 @@ class ProcessingEngine:
             context.metrics.processed_frames == 0
             and context.latest_frame is None
             and context.latest_rendered_frame is None
+            and context.latest_rendered_version is None
             and context.latest_detections is None
             and context.error is None
             and context.queue.received == 0
             and context.state in {StreamState.CREATED, StreamState.STOPPED}
         )
+
+    def snapshot_for_rebuild(self) -> list[StreamRestoreSnapshot]:
+        snapshots: list[StreamRestoreSnapshot] = []
+        for context in self.contexts():
+            with context.lock:
+                snapshots.append(
+                    StreamRestoreSnapshot(
+                        stream_id=context.stream_id,
+                        source=context.source,
+                        options=replace(context.options),
+                        tracker_settings=replace(context.tracker.settings),
+                        was_running=context.state
+                        in {
+                            StreamState.CONNECTING,
+                            StreamState.ACTIVE,
+                            StreamState.RECONNECTING,
+                        },
+                    )
+                )
+        return snapshots
 
     def _invalidate_context_runtime(self, context: StreamContext) -> None:
         with context.lock:
@@ -133,6 +164,7 @@ class ProcessingEngine:
         *,
         stream_id: str | None = None,
         options: StreamOptions | None = None,
+        tracker_settings: ByteTrackSettings | None = None,
     ) -> str:
         source_obj = source if isinstance(source, VideoSource) else VideoSource.from_uri(source)
         identifier = stream_id or new_stream_id()
@@ -148,7 +180,7 @@ class ProcessingEngine:
                     iou=self.config.model.iou,
                 ),
             )
-            context.tracker = StreamTracker(self._tracker_settings())
+            context.tracker = StreamTracker(tracker_settings or self._tracker_settings())
             context.counter = ZoneCounter(self._zone_geometry())
             self._contexts[identifier] = context
         return identifier
@@ -255,8 +287,36 @@ class ProcessingEngine:
     def reset_counters(self, stream_id: str) -> None:
         context = self.get(stream_id)
         with context.lock:
-            if context.counter is not None:
-                context.counter.reset()
+            if context.counter is None:
+                return
+            context.counter.reset()
+            self._rerender_latest_locked(context)
+
+    def _rerender_latest_locked(self, context: StreamContext) -> bool:
+        if context.latest_frame is None or context.latest_detections is None:
+            return False
+
+        counter = context.counter
+        tracker = context.tracker
+        options = context.options
+        rendered = render_frame(
+            context.latest_frame,
+            context.latest_detections,
+            trajectories=tracker.trajectories if tracker is not None else {},
+            geometry=counter.geometry if counter is not None else None,
+            in_count=counter.in_count if counter is not None else 0,
+            out_count=counter.out_count if counter is not None else 0,
+            occupancy=counter.occupancy if counter is not None else 0,
+            show_detections=options.detection_enabled,
+            show_tracking=options.tracking_enabled,
+            show_counting=options.counting_enabled,
+        )
+        context.publish_rendered_frame(
+            context.latest_frame,
+            rendered,
+            context.latest_detections,
+        )
+        return True
 
     def update_options(self, stream_id: str, **changes) -> None:
         context = self.get(stream_id)
@@ -265,8 +325,8 @@ class ProcessingEngine:
 
     def update_tracker(self, stream_id: str, **changes) -> None:
         context = self.get(stream_id)
-        settings = replace(context.tracker.settings, **changes)
         with context.lock:
+            settings = replace(context.tracker.settings, **changes)
             context.tracker = StreamTracker(settings)
             context.counter.reset_tracking_state()
 

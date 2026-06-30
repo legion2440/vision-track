@@ -10,6 +10,7 @@ import numpy as np
 from .context import StreamContext
 from .lifecycle import StreamState
 from .sources import SourceType, VideoSource
+from .tracking import ByteTrackSettings
 
 UI_CANVAS_WIDTH = 960
 UI_CANVAS_HEIGHT = 540
@@ -48,6 +49,36 @@ class StreamMetricsSnapshot:
 
 
 @dataclass(frozen=True)
+class StreamIdentitySnapshot:
+    stream_id: str
+    source: VideoSource
+    source_token: str
+    display_name: str
+
+
+@dataclass(frozen=True)
+class StreamControlSnapshot:
+    stream_id: str
+    source_type: SourceType
+    state: StreamState
+    processed_frames: int
+
+    confidence: float
+    iou: float
+    detection_enabled: bool
+    tracking_enabled: bool
+    counting_enabled: bool
+
+    track_activation_threshold: float
+    lost_track_buffer: int
+    minimum_matching_threshold: float
+
+    actual_backend: str | None
+    actual_device: str | None
+    actual_provider: str | None
+
+
+@dataclass(frozen=True)
 class CachedStreamFrame:
     source_token: str
     frame_version: FrameVersion
@@ -74,11 +105,55 @@ def single_stream_column_weights(stream_count: int) -> list[float]:
     return [1.0, 1.6, 1.0] if stream_count == 1 else [1.0] * stream_grid_columns(stream_count)
 
 
-def replay_button_label(context: StreamContext) -> str:
+def snapshot_stream_identity(
+    context: StreamContext,
+) -> StreamIdentitySnapshot:
+    with context.lock:
+        source = context.source
+        return StreamIdentitySnapshot(
+            stream_id=context.stream_id,
+            source=source,
+            source_token=stream_source_token(source),
+            display_name=source.display_name,
+        )
+
+
+def snapshot_stream_controls(
+    context: StreamContext,
+) -> StreamControlSnapshot:
+    with context.lock:
+        source = context.source
+        options = context.options
+        metrics = context.metrics
+        tracker_settings = (
+            context.tracker.settings
+            if context.tracker is not None
+            else ByteTrackSettings()
+        )
+        return StreamControlSnapshot(
+            stream_id=context.stream_id,
+            source_type=source.source_type,
+            state=context.state,
+            processed_frames=metrics.processed_frames,
+            confidence=options.confidence,
+            iou=options.iou,
+            detection_enabled=options.detection_enabled,
+            tracking_enabled=options.tracking_enabled,
+            counting_enabled=options.counting_enabled,
+            track_activation_threshold=tracker_settings.track_activation_threshold,
+            lost_track_buffer=tracker_settings.lost_track_buffer,
+            minimum_matching_threshold=tracker_settings.minimum_matching_threshold,
+            actual_backend=context.actual_backend,
+            actual_device=context.actual_device,
+            actual_provider=context.actual_provider,
+        )
+
+
+def replay_button_label(control: StreamControlSnapshot) -> str:
     if (
-        context.source.source_type is SourceType.LOCAL
-        and context.state in {StreamState.EOF, StreamState.FAILED, StreamState.STOPPED}
-        and context.metrics.processed_frames > 0
+        control.source_type is SourceType.LOCAL
+        and control.state in {StreamState.EOF, StreamState.FAILED, StreamState.STOPPED}
+        and control.processed_frames > 0
     ):
         return "Replay"
     return "Restart"
@@ -272,7 +347,7 @@ def snapshot_stream_metrics(
 
 
 def runtime_backend_summary(
-    context: StreamContext | StreamMetricsSnapshot | None,
+    context: StreamControlSnapshot | StreamMetricsSnapshot | None,
     *,
     requested_backend: str,
     requested_device: str,

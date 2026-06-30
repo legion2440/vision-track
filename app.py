@@ -15,21 +15,21 @@ if str(SRC) not in sys.path:
 from vision_track.configuration import load_config, resolve_project_path
 from vision_track.detector import available_backends
 from vision_track.engine import ProcessingEngine
-from vision_track.lifecycle import StreamState
 from vision_track.streamlit_state import ENGINE_KEY
 from vision_track.ui import (
     CachedStreamFrame,
-    StreamMetricsSnapshot,
     StreamFrameUpdate,
+    StreamMetricsSnapshot,
     clear_stream_frame_cache,
     prune_stream_frame_cache,
     replay_button_label,
     runtime_backend_summary,
     single_stream_column_weights,
+    snapshot_stream_controls,
     snapshot_stream_frame,
+    snapshot_stream_identity,
     snapshot_stream_metrics,
     stream_grid_columns,
-    stream_source_token,
     update_stream_frame_cache,
     waiting_slot_transition,
 )
@@ -49,29 +49,22 @@ def _engine_for_backend(backend_name: str) -> ProcessingEngine:
     existing = st.session_state.get(ENGINE_KEY)
     existing_backend = st.session_state.get("vision_backend")
     if existing is None or existing_backend != backend_name or getattr(existing, "_shutdown", False):
-        frame_cache.clear()
         snapshots = []
         if existing is not None:
-            snapshots = [
-                (
-                    context.stream_id,
-                    context.source,
-                    context.options,
-                    context.state
-                    in {
-                        StreamState.CONNECTING,
-                        StreamState.ACTIVE,
-                        StreamState.RECONNECTING,
-                    },
-                )
-                for context in existing.contexts()
-            ]
+            snapshots = existing.snapshot_for_rebuild()
+        frame_cache.clear()
+        if existing is not None:
             existing.shutdown()
         existing = ProcessingEngine(config, backend_name=backend_name)
-        for stream_id, source, options, was_running in snapshots:
-            existing.add_stream(source, stream_id=stream_id, options=options)
-            if was_running:
-                existing.start(stream_id)
+        for snapshot in snapshots:
+            existing.add_stream(
+                snapshot.source,
+                stream_id=snapshot.stream_id,
+                options=snapshot.options,
+                tracker_settings=snapshot.tracker_settings,
+            )
+            if snapshot.was_running:
+                existing.start(snapshot.stream_id)
         st.session_state[ENGINE_KEY] = existing
         st.session_state["vision_backend"] = backend_name
     return existing
@@ -105,6 +98,17 @@ with st.sidebar:
         f"Requested backend: `{engine.detector.name}`"
     )
 
+    contexts = engine.contexts()
+    identities = [
+        snapshot_stream_identity(context)
+        for context in contexts
+    ]
+    identity_by_id = {identity.stream_id: identity for identity in identities}
+    identity_labels = {
+        identity.stream_id: f"{identity.stream_id} · {identity.display_name}"
+        for identity in identities
+    }
+
     uploads = st.file_uploader(
         "Add local videos",
         type=["mp4", "avi", "mov", "mkv", "webm"],
@@ -113,7 +117,7 @@ with st.sidebar:
     if st.button("Add uploaded videos", use_container_width=True):
         for upload in uploads or []:
             path = _save_upload(upload)
-            if not any(context.source.uri == str(path) for context in engine.contexts()):
+            if not any(identity.source.uri == str(path) for identity in identities):
                 engine.add_stream(str(path))
         st.rerun()
 
@@ -122,16 +126,15 @@ with st.sidebar:
         engine.add_stream(remote_url.strip())
         st.rerun()
 
-    contexts = engine.contexts()
     active_sources = {
-        context.stream_id: stream_source_token(context.source) for context in contexts
+        identity.stream_id: identity.source_token for identity in identities
     }
     prune_stream_frame_cache(frame_cache, active_sources)
-    stream_ids = [context.stream_id for context in contexts]
+    stream_ids = [identity.stream_id for identity in identities]
     selected_id = st.selectbox(
         "Selected stream",
         stream_ids,
-        format_func=lambda item: f"{item} · {engine.get(item).source.display_name}",
+        format_func=lambda item: identity_labels.get(item, item),
         index=0 if stream_ids else None,
         placeholder="No streams",
     )
@@ -141,18 +144,18 @@ with st.sidebar:
         selected_stream_id: str | None,
         control_stream_ids: tuple[str, ...],
     ) -> None:
-        selected_context = None
+        control = None
         if selected_stream_id:
             try:
-                selected_context = engine.get(selected_stream_id)
+                control = snapshot_stream_controls(engine.get(selected_stream_id))
             except KeyError:
-                selected_context = None
+                control = None
 
-        if selected_context is not None:
-            stream_id = selected_context.stream_id
+        if control is not None:
+            stream_id = control.stream_id
             st.caption(
                 runtime_backend_summary(
-                    selected_context,
+                    control,
                     requested_backend=engine.detector.name,
                     requested_device=engine.device.kind,
                 )
@@ -162,7 +165,7 @@ with st.sidebar:
                     "Confidence",
                     0.05,
                     0.95,
-                    float(selected_context.options.confidence),
+                    float(control.confidence),
                     0.05,
                     key=f"sidebar-confidence-{stream_id}",
                 )
@@ -170,30 +173,30 @@ with st.sidebar:
                     "IoU threshold",
                     0.10,
                     0.90,
-                    float(selected_context.options.iou),
+                    float(control.iou),
                     0.05,
                     key=f"sidebar-iou-{stream_id}",
                 )
                 detection_enabled = st.toggle(
                     "Detection",
-                    value=selected_context.options.detection_enabled,
+                    value=control.detection_enabled,
                     key=f"sidebar-detection-{stream_id}",
                 )
                 tracking_enabled = st.toggle(
                     "Tracking",
-                    value=selected_context.options.tracking_enabled,
+                    value=control.tracking_enabled,
                     key=f"sidebar-tracking-{stream_id}",
                 )
                 counting_enabled = st.toggle(
                     "Counting",
-                    value=selected_context.options.counting_enabled,
+                    value=control.counting_enabled,
                     key=f"sidebar-counting-{stream_id}",
                 )
                 activation = st.slider(
                     "Track activation",
                     0.05,
                     0.90,
-                    float(selected_context.tracker.settings.track_activation_threshold),
+                    float(control.track_activation_threshold),
                     0.05,
                     key=f"sidebar-track-activation-{stream_id}",
                 )
@@ -201,14 +204,14 @@ with st.sidebar:
                     "Lost track buffer",
                     min_value=1,
                     max_value=300,
-                    value=int(selected_context.tracker.settings.lost_track_buffer),
+                    value=int(control.lost_track_buffer),
                     key=f"sidebar-lost-buffer-{stream_id}",
                 )
                 matching = st.slider(
                     "Matching threshold",
                     0.10,
                     0.99,
-                    float(selected_context.tracker.settings.minimum_matching_threshold),
+                    float(control.minimum_matching_threshold),
                     0.01,
                     key=f"sidebar-matching-{stream_id}",
                 )
@@ -227,10 +230,9 @@ with st.sidebar:
                 )
                 if (
                     activation
-                    != selected_context.tracker.settings.track_activation_threshold
-                    or lost_buffer != selected_context.tracker.settings.lost_track_buffer
-                    or matching
-                    != selected_context.tracker.settings.minimum_matching_threshold
+                    != control.track_activation_threshold
+                    or lost_buffer != control.lost_track_buffer
+                    or matching != control.minimum_matching_threshold
                 ):
                     engine.update_tracker(
                         stream_id,
@@ -253,7 +255,7 @@ with st.sidebar:
             ):
                 engine.stop(stream_id)
             if first.button(
-                replay_button_label(selected_context),
+                replay_button_label(control),
                 key=f"sidebar-restart-{stream_id}",
                 use_container_width=True,
             ):
@@ -313,7 +315,7 @@ def _stream_metrics_caption(snapshot: StreamMetricsSnapshot) -> str:
 @st.fragment
 def render_detail_controls(stream_id: str) -> None:
     try:
-        context = engine.get(stream_id)
+        control = snapshot_stream_controls(engine.get(stream_id))
     except KeyError:
         return
     control_columns = st.columns(4)
@@ -330,7 +332,7 @@ def render_detail_controls(stream_id: str) -> None:
     ):
         engine.stop(stream_id)
     if control_columns[2].button(
-        replay_button_label(context),
+        replay_button_label(control),
         key=f"detail-restart-{stream_id}",
         use_container_width=True,
     ):
@@ -343,8 +345,8 @@ def render_detail_controls(stream_id: str) -> None:
         engine.reset_counters(stream_id)
 
 
-dashboard_contexts = contexts
-dashboard_stream_ids = [context.stream_id for context in dashboard_contexts]
+dashboard_identities = identities
+dashboard_stream_ids = [identity.stream_id for identity in dashboard_identities]
 dashboard_requested_backend = engine.detector.name
 dashboard_requested_device = engine.device.kind
 stream_placeholders: dict[str, dict[str, object]] = {}
@@ -353,36 +355,36 @@ detail_metric_placeholders = []
 detail_runtime_placeholder = None
 detail_stream_id = None
 
-if not dashboard_contexts:
+if not dashboard_identities:
     st.info("Add a local video or an HTTP/RTSP source from the sidebar.")
 else:
     st.subheader("Streams")
-    if len(dashboard_contexts) == 1:
+    if len(dashboard_identities) == 1:
         _, middle, _ = st.columns(single_stream_column_weights(1))
         stream_columns = [middle]
     else:
-        stream_columns = st.columns(stream_grid_columns(len(dashboard_contexts)))
+        stream_columns = st.columns(stream_grid_columns(len(dashboard_identities)))
 
-    for index, context in enumerate(dashboard_contexts):
+    for index, identity in enumerate(dashboard_identities):
         with stream_columns[index % len(stream_columns)]:
-            st.markdown(f"**{context.source.display_name}**")
+            st.markdown(f"**{identity.display_name}**")
             image_placeholder = st.empty()
             waiting_placeholder = st.empty()
-            cached = frame_cache.get(context.stream_id)
+            cached = frame_cache.get(identity.stream_id)
             if (
                 cached is not None
-                and cached.source_token == active_sources[context.stream_id]
+                and cached.source_token == active_sources[identity.stream_id]
             ):
                 image_placeholder.image(
                     cached.jpeg,
                     width="stretch",
                 )
                 waiting_placeholder.empty()
-                waiting_visible[context.stream_id] = False
+                waiting_visible[identity.stream_id] = False
             else:
                 waiting_placeholder.caption("Waiting for frames")
-                waiting_visible[context.stream_id] = True
-            stream_placeholders[context.stream_id] = {
+                waiting_visible[identity.stream_id] = True
+            stream_placeholders[identity.stream_id] = {
                 "image": image_placeholder,
                 "waiting": waiting_placeholder,
                 "metrics": st.empty(),
@@ -390,13 +392,10 @@ else:
             }
 
     if selected_id and selected_id in dashboard_stream_ids:
-        try:
-            detail_context = engine.get(selected_id)
-        except KeyError:
-            detail_context = None
-        if detail_context is not None:
+        detail_identity = identity_by_id.get(selected_id)
+        if detail_identity is not None:
             detail_stream_id = selected_id
-            st.subheader(f"Details · {detail_context.source.display_name}")
+            st.subheader(f"Details · {detail_identity.display_name}")
             metric_columns = st.columns(8)
             detail_metric_placeholders = [column.empty() for column in metric_columns]
             detail_runtime_placeholder = st.empty()

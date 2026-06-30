@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 
 import cv2
@@ -7,11 +8,13 @@ import numpy as np
 import pytest
 
 import vision_track.ui as ui_module
-from vision_track.context import StreamContext
+from vision_track.context import StreamContext, StreamOptions
 from vision_track.lifecycle import StreamState
 from vision_track.sources import SourceType, VideoSource
+from vision_track.tracking import ByteTrackSettings
 from vision_track.ui import (
     CachedStreamFrame,
+    StreamControlSnapshot,
     StreamFrameSnapshot,
     StreamMetricsSnapshot,
     UI_CANVAS_HEIGHT,
@@ -23,7 +26,9 @@ from vision_track.ui import (
     replay_button_label,
     runtime_backend_summary,
     single_stream_column_weights,
+    snapshot_stream_controls,
     snapshot_stream_frame,
+    snapshot_stream_identity,
     snapshot_stream_metrics,
     stream_grid_columns,
     stream_source_token,
@@ -81,6 +86,34 @@ def _metrics_snapshot(
     )
 
 
+def _control_snapshot(
+    *,
+    source_type: SourceType = SourceType.LOCAL,
+    state: StreamState = StreamState.ACTIVE,
+    processed_frames: int = 0,
+    actual_backend: str | None = None,
+    actual_device: str | None = None,
+    actual_provider: str | None = None,
+) -> StreamControlSnapshot:
+    return StreamControlSnapshot(
+        stream_id="stream-1",
+        source_type=source_type,
+        state=state,
+        processed_frames=processed_frames,
+        confidence=0.35,
+        iou=0.5,
+        detection_enabled=True,
+        tracking_enabled=True,
+        counting_enabled=True,
+        track_activation_threshold=0.25,
+        lost_track_buffer=30,
+        minimum_matching_threshold=0.8,
+        actual_backend=actual_backend,
+        actual_device=actual_device,
+        actual_provider=actual_provider,
+    )
+
+
 def test_stream_grid_uses_one_bounded_column_for_single_stream() -> None:
     assert stream_grid_columns(1) == 1
     assert single_stream_column_weights(1) == [1.0, 1.6, 1.0]
@@ -91,10 +124,77 @@ def test_stream_grid_uses_two_columns_for_multiple_streams() -> None:
     assert stream_grid_columns(5) == 2
 
 
+def test_snapshot_stream_identity_captures_source_under_context_lock() -> None:
+    source = VideoSource.from_uri("video.mp4", display_name="Lobby")
+    context = StreamContext("stream-1", source)
+    attempted = threading.Event()
+    finished = threading.Event()
+    snapshots = []
+
+    def worker() -> None:
+        attempted.set()
+        snapshots.append(snapshot_stream_identity(context))
+        finished.set()
+
+    with context.lock:
+        thread = threading.Thread(target=worker)
+        thread.start()
+        assert attempted.wait(1.0)
+        assert not finished.wait(0.05)
+
+    assert finished.wait(1.0)
+    thread.join(timeout=1.0)
+    snapshot = snapshots[0]
+    assert snapshot.stream_id == "stream-1"
+    assert snapshot.source is source
+    assert snapshot.source_token == stream_source_token(source)
+    assert snapshot.display_name == "Lobby"
+
+
+def test_snapshot_stream_controls_captures_control_scalars() -> None:
+    context = StreamContext("stream-1", VideoSource.from_uri("rtsp://example.test/live"))
+    context.options = StreamOptions(
+        confidence=0.45,
+        iou=0.65,
+        detection_enabled=False,
+        tracking_enabled=True,
+        counting_enabled=False,
+    )
+    context.force_state(StreamState.RECONNECTING)
+    context.metrics.processed_frames = 42
+    context.tracker = SimpleNamespace(
+        settings=ByteTrackSettings(
+            track_activation_threshold=0.4,
+            lost_track_buffer=90,
+            minimum_matching_threshold=0.7,
+        )
+    )
+    context.actual_backend = "onnxruntime"
+    context.actual_device = "cpu"
+    context.actual_provider = "CPUExecutionProvider"
+
+    snapshot = snapshot_stream_controls(context)
+
+    assert snapshot.stream_id == "stream-1"
+    assert snapshot.source_type is SourceType.RTSP
+    assert snapshot.state is StreamState.RECONNECTING
+    assert snapshot.processed_frames == 42
+    assert snapshot.confidence == 0.45
+    assert snapshot.iou == 0.65
+    assert snapshot.detection_enabled is False
+    assert snapshot.tracking_enabled is True
+    assert snapshot.counting_enabled is False
+    assert snapshot.track_activation_threshold == 0.4
+    assert snapshot.lost_track_buffer == 90
+    assert snapshot.minimum_matching_threshold == 0.7
+    assert snapshot.actual_backend == "onnxruntime"
+    assert snapshot.actual_device == "cpu"
+    assert snapshot.actual_provider == "CPUExecutionProvider"
+
+
 def test_runtime_backend_summary_is_pending_before_first_inference() -> None:
-    context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
     summary = runtime_backend_summary(
-        context,
+        None,
         requested_backend="pytorch",
         requested_device="cuda",
     )
@@ -102,13 +202,14 @@ def test_runtime_backend_summary_is_pending_before_first_inference() -> None:
     assert "pending first inference" in summary
 
 
-def test_runtime_backend_summary_reports_actual_provider_from_context() -> None:
-    context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
-    context.actual_backend = "onnxruntime"
-    context.actual_device = "cpu"
-    context.actual_provider = "CPUExecutionProvider"
+def test_runtime_backend_summary_reports_actual_provider_from_control_snapshot() -> None:
+    control = _control_snapshot(
+        actual_backend="onnxruntime",
+        actual_device="cpu",
+        actual_provider="CPUExecutionProvider",
+    )
     summary = runtime_backend_summary(
-        context,
+        control,
         requested_backend="onnxruntime",
         requested_device="cuda",
     )
@@ -132,10 +233,9 @@ def test_runtime_backend_summary_reports_metrics_snapshot_actual_provider() -> N
 
 
 def test_local_completed_stream_uses_replay_label() -> None:
-    context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
-    context.force_state(StreamState.EOF)
-    context.metrics.processed_frames = 1
-    assert replay_button_label(context) == "Replay"
+    control = _control_snapshot(state=StreamState.EOF, processed_frames=1)
+
+    assert replay_button_label(control) == "Replay"
 
 
 def test_fit_landscape_frame_to_canvas_without_black_bars() -> None:
@@ -344,7 +444,36 @@ def test_new_published_frame_encodes_once(monkeypatch) -> None:
     assert snapshot.frame_jpeg == b"encoded"
 
 
-def test_new_runtime_with_same_frame_index_encodes_once(monkeypatch) -> None:
+def test_reset_counter_republished_version_encodes_once(monkeypatch) -> None:
+    context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
+    context.latest_rendered_version = (4, 22)
+    context.latest_rendered_frame = np.full((54, 96, 3), 10, dtype=np.uint8)
+    cached = CachedStreamFrame(
+        source_token=stream_source_token(context.source),
+        frame_version=(4, 21),
+        jpeg=b"cached",
+    )
+    calls = {"copy": 0, "encode": 0}
+
+    def fake_copy(frame: np.ndarray) -> np.ndarray:
+        calls["copy"] += 1
+        return frame.copy()
+
+    def fake_encode(frame: np.ndarray) -> bytes:
+        calls["encode"] += 1
+        return b"encoded"
+
+    monkeypatch.setattr(ui_module, "_copy_frame_for_ui", fake_copy)
+    monkeypatch.setattr(ui_module, "encode_frame_jpeg", fake_encode)
+
+    snapshot = snapshot_stream_frame(context, cached_frame=cached)
+
+    assert calls == {"copy": 1, "encode": 1}
+    assert snapshot.frame_version == (4, 22)
+    assert snapshot.frame_jpeg == b"encoded"
+
+
+def test_new_generation_with_same_render_revision_encodes_once(monkeypatch) -> None:
     context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
     context.latest_rendered_version = (5, 0)
     context.latest_rendered_frame = np.full((54, 96, 3), 10, dtype=np.uint8)

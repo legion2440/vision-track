@@ -73,6 +73,7 @@ class StreamContext:
     actual_device: str | None = None
     actual_provider: str | None = None
     runtime_generation: int = 0
+    render_revision: int = 0
     trajectories: dict[int, list[tuple[int, int]]] = field(default_factory=dict)
     metrics: StreamMetrics = field(default_factory=StreamMetrics)
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
@@ -89,6 +90,21 @@ class StreamContext:
     def set_error(self, error: str | None) -> None:
         with self.lock:
             self.error = error
+
+    def publish_rendered_frame(
+        self,
+        source_frame: np.ndarray,
+        rendered_frame: np.ndarray,
+        detections: Any,
+    ) -> tuple[int, int]:
+        with self.lock:
+            self.render_revision += 1
+            version = (self.runtime_generation, self.render_revision)
+            self.latest_frame = source_frame
+            self.latest_rendered_frame = rendered_frame
+            self.latest_rendered_version = version
+            self.latest_detections = detections
+            return version
 
     @property
     def composite_ids(self) -> list[tuple[str, int]]:

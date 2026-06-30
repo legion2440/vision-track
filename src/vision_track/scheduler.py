@@ -182,13 +182,11 @@ class SharedInferenceScheduler:
                 show_tracking=context.options.tracking_enabled,
                 show_counting=context.options.counting_enabled,
             )
-            context.latest_frame = packet.frame
-            context.latest_rendered_frame = rendered
-            context.latest_rendered_version = (
-                packet.runtime_generation,
-                packet.frame_index,
+            context.publish_rendered_frame(
+                packet.frame,
+                rendered,
+                detections,
             )
-            context.latest_detections = detections
             context.actual_backend = result.backend
             context.actual_device = result.device
             context.actual_provider = result.provider
