@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
 
 import cv2
@@ -7,11 +9,13 @@ import numpy as np
 
 from .context import StreamContext
 from .lifecycle import StreamState
-from .sources import SourceType
+from .sources import SourceType, VideoSource
 
 UI_CANVAS_WIDTH = 960
 UI_CANVAS_HEIGHT = 540
 UI_JPEG_QUALITY = 85
+
+FrameVersion = tuple[int, int]
 
 
 @dataclass(frozen=True)
@@ -19,9 +23,10 @@ class StreamUISnapshot:
     stream_id: str
     display_name: str
     source_type: SourceType
+    source_token: str
     state: StreamState
     error: str | None
-    frame_version: int
+    frame_version: FrameVersion
     frame_jpeg: bytes | None
     fps: float
     inference_latency_ms: float
@@ -33,6 +38,25 @@ class StreamUISnapshot:
     actual_backend: str | None
     actual_device: str | None
     actual_provider: str | None
+
+
+@dataclass(frozen=True)
+class CachedStreamFrame:
+    source_token: str
+    frame_version: FrameVersion
+    jpeg: bytes
+
+
+@dataclass(frozen=True)
+class StreamFrameUpdate:
+    render_jpeg: bytes | None
+    clear_image: bool
+    show_waiting: bool
+
+
+def stream_source_token(source: VideoSource) -> str:
+    payload = f"{source.source_type.value}\0{source.uri}".encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def stream_grid_columns(stream_count: int) -> int:
@@ -96,19 +120,98 @@ def encode_frame_jpeg(frame: np.ndarray) -> bytes:
     return encoded.tobytes()
 
 
-def snapshot_stream_context(context: StreamContext) -> StreamUISnapshot:
+def _copy_frame_for_ui(frame: np.ndarray) -> np.ndarray:
+    return np.ascontiguousarray(frame).copy()
+
+
+def update_stream_frame_cache(
+    cache: MutableMapping[str, CachedStreamFrame],
+    snapshot: StreamUISnapshot,
+) -> StreamFrameUpdate:
+    cached = cache.get(snapshot.stream_id)
+    source_changed = False
+    if cached is not None and cached.source_token != snapshot.source_token:
+        cache.pop(snapshot.stream_id, None)
+        cached = None
+        source_changed = True
+
+    if snapshot.frame_jpeg is not None:
+        cache[snapshot.stream_id] = CachedStreamFrame(
+            source_token=snapshot.source_token,
+            frame_version=snapshot.frame_version,
+            jpeg=snapshot.frame_jpeg,
+        )
+        return StreamFrameUpdate(
+            render_jpeg=snapshot.frame_jpeg,
+            clear_image=False,
+            show_waiting=False,
+        )
+
+    if cached is not None:
+        return StreamFrameUpdate(
+            render_jpeg=None,
+            clear_image=False,
+            show_waiting=False,
+        )
+
+    if source_changed:
+        return StreamFrameUpdate(
+            render_jpeg=None,
+            clear_image=True,
+            show_waiting=True,
+        )
+
+    return StreamFrameUpdate(
+        render_jpeg=None,
+        clear_image=False,
+        show_waiting=True,
+    )
+
+
+def clear_stream_frame_cache(
+    cache: MutableMapping[str, CachedStreamFrame],
+    stream_id: str,
+) -> None:
+    cache.pop(stream_id, None)
+
+
+def prune_stream_frame_cache(
+    cache: MutableMapping[str, CachedStreamFrame],
+    active_sources: Mapping[str, str],
+) -> None:
+    for stream_id, cached in list(cache.items()):
+        if stream_id not in active_sources or cached.source_token != active_sources[stream_id]:
+            cache.pop(stream_id, None)
+
+
+def snapshot_stream_context(
+    context: StreamContext,
+    *,
+    cached_frame: CachedStreamFrame | None = None,
+    include_frame: bool = True,
+) -> StreamUISnapshot:
     with context.lock:
         source = context.source
         metrics = context.metrics
         counter = context.counter
         queue = context.queue
-        rendered_frame = context.latest_rendered_frame
+        source_token = stream_source_token(source)
+        frame_version = (context.runtime_generation, metrics.processed_frames)
+        cached_matches = (
+            cached_frame is not None
+            and cached_frame.source_token == source_token
+            and cached_frame.frame_version == frame_version
+        )
+        should_copy_frame = (
+            include_frame
+            and context.latest_rendered_frame is not None
+            and not cached_matches
+        )
         frame_copy = (
-            np.ascontiguousarray(rendered_frame).copy()
-            if rendered_frame is not None
+            _copy_frame_for_ui(context.latest_rendered_frame)
+            if should_copy_frame
             else None
         )
-        frame_version = metrics.processed_frames
         received = queue.received
         dropped = queue.dropped
         dropped_rate = dropped / received if received else 0.0
@@ -132,6 +235,7 @@ def snapshot_stream_context(context: StreamContext) -> StreamUISnapshot:
         stream_id=stream_id,
         display_name=display_name,
         source_type=source_type,
+        source_token=source_token,
         state=state,
         error=error,
         frame_version=frame_version,

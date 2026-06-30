@@ -18,17 +18,29 @@ from vision_track.engine import ProcessingEngine
 from vision_track.lifecycle import StreamState
 from vision_track.streamlit_state import ENGINE_KEY
 from vision_track.ui import (
+    CachedStreamFrame,
+    StreamFrameUpdate,
     StreamUISnapshot,
+    clear_stream_frame_cache,
+    prune_stream_frame_cache,
     replay_button_label,
     runtime_backend_summary,
     single_stream_column_weights,
     snapshot_stream_context,
     stream_grid_columns,
+    stream_source_token,
+    update_stream_frame_cache,
 )
 
 
 st.set_page_config(page_title="VisionTrack", page_icon="🎯", layout="wide")
 config = load_config()
+FRAME_CACHE_SESSION_KEY = "vision_frame_cache_v1"
+raw_frame_cache = st.session_state.get(FRAME_CACHE_SESSION_KEY)
+if not isinstance(raw_frame_cache, dict):
+    raw_frame_cache = {}
+    st.session_state[FRAME_CACHE_SESSION_KEY] = raw_frame_cache
+frame_cache: dict[str, CachedStreamFrame] = raw_frame_cache
 
 
 def _engine_for_backend(backend_name: str) -> ProcessingEngine:
@@ -108,6 +120,10 @@ with st.sidebar:
         st.rerun()
 
     contexts = engine.contexts()
+    active_sources = {
+        context.stream_id: stream_source_token(context.source) for context in contexts
+    }
+    prune_stream_frame_cache(frame_cache, active_sources)
     stream_ids = [context.stream_id for context in contexts]
     selected_id = st.selectbox(
         "Selected stream",
@@ -190,6 +206,7 @@ with st.sidebar:
         if second.button("Reset counters", use_container_width=True):
             engine.reset_counters(selected_id)
         if st.button("Remove stream", use_container_width=True):
+            clear_stream_frame_cache(frame_cache, selected_id)
             engine.remove(selected_id)
             st.rerun()
 
@@ -251,7 +268,7 @@ dashboard_contexts = contexts
 dashboard_stream_ids = [context.stream_id for context in dashboard_contexts]
 dashboard_requested_backend = engine.detector.name
 dashboard_requested_device = engine.device.kind
-stream_placeholders = {}
+stream_placeholders: dict[str, dict[str, object]] = {}
 detail_metric_placeholders = []
 detail_runtime_placeholder = None
 detail_stream_id = None
@@ -269,9 +286,23 @@ else:
     for index, context in enumerate(dashboard_contexts):
         with stream_columns[index % len(stream_columns)]:
             st.markdown(f"**{context.source.display_name}**")
+            image_placeholder = st.empty()
+            waiting_placeholder = st.empty()
+            cached = frame_cache.get(context.stream_id)
+            if (
+                cached is not None
+                and cached.source_token == active_sources[context.stream_id]
+            ):
+                image_placeholder.image(
+                    cached.jpeg,
+                    width="stretch",
+                )
+                waiting_placeholder.empty()
+            else:
+                waiting_placeholder.caption("Waiting for frames")
             stream_placeholders[context.stream_id] = {
-                "image": st.empty(),
-                "waiting": st.empty(),
+                "image": image_placeholder,
+                "waiting": waiting_placeholder,
                 "metrics": st.empty(),
                 "error": st.empty(),
             }
@@ -289,45 +320,57 @@ else:
             detail_runtime_placeholder = st.empty()
             _render_detail_controls(detail_context)
 
-last_frame_versions: dict[str, int | None] = {
-    stream_id: None for stream_id in dashboard_stream_ids
-}
-visible_frame_slots = {stream_id: False for stream_id in dashboard_stream_ids}
+@st.fragment(run_every=0.01)
+def render_stream_images() -> None:
+    for stream_id in dashboard_stream_ids:
+        try:
+            context = engine.get(stream_id)
+        except KeyError:
+            continue
+        placeholders = stream_placeholders.get(stream_id)
+        if placeholders is None:
+            continue
+        cached = frame_cache.get(stream_id)
+        snapshot = snapshot_stream_context(
+            context,
+            cached_frame=cached,
+            include_frame=True,
+        )
+        update: StreamFrameUpdate = update_stream_frame_cache(frame_cache, snapshot)
+
+        image_placeholder = placeholders["image"]
+        waiting_placeholder = placeholders["waiting"]
+        if update.clear_image:
+            image_placeholder.empty()
+        if update.render_jpeg is not None:
+            image_placeholder.image(
+                update.render_jpeg,
+                width="stretch",
+            )
+        if update.show_waiting:
+            waiting_placeholder.caption("Waiting for frames")
+        else:
+            waiting_placeholder.empty()
 
 
-@st.fragment(run_every="500ms")
-def render_dashboard() -> None:
+@st.fragment(run_every=0.25)
+def render_stream_metrics() -> None:
     snapshots: dict[str, StreamUISnapshot] = {}
     for stream_id in dashboard_stream_ids:
         try:
             context = engine.get(stream_id)
         except KeyError:
             continue
-        snapshots[stream_id] = snapshot_stream_context(context)
+        snapshots[stream_id] = snapshot_stream_context(
+            context,
+            cached_frame=None,
+            include_frame=False,
+        )
 
     for stream_id, placeholders in stream_placeholders.items():
         snapshot = snapshots.get(stream_id)
         if snapshot is None:
             continue
-
-        if snapshot.frame_jpeg is not None:
-            if (
-                snapshot.frame_version != last_frame_versions.get(stream_id)
-                or not visible_frame_slots.get(stream_id, False)
-            ):
-                placeholders["image"].image(
-                    snapshot.frame_jpeg,
-                    width="stretch",
-                )
-                last_frame_versions[stream_id] = snapshot.frame_version
-                visible_frame_slots[stream_id] = True
-            placeholders["waiting"].empty()
-        else:
-            if visible_frame_slots.get(stream_id, False):
-                placeholders["image"].empty()
-                last_frame_versions[stream_id] = snapshot.frame_version
-                visible_frame_slots[stream_id] = False
-            placeholders["waiting"].caption("Waiting for frames")
 
         placeholders["metrics"].caption(_stream_metrics_caption(snapshot))
         if snapshot.error:
@@ -365,4 +408,5 @@ def render_dashboard() -> None:
         )
 
 
-render_dashboard()
+render_stream_images()
+render_stream_metrics()

@@ -7,21 +7,27 @@ import cv2
 import numpy as np
 import pytest
 
+import vision_track.ui as ui_module
 from vision_track.context import StreamContext
 from vision_track.lifecycle import StreamState
 from vision_track.sources import SourceType
 from vision_track.sources import VideoSource
 from vision_track.ui import (
+    CachedStreamFrame,
     UI_CANVAS_HEIGHT,
     UI_CANVAS_WIDTH,
     StreamUISnapshot,
+    clear_stream_frame_cache,
     encode_frame_jpeg,
     fit_frame_to_canvas,
+    prune_stream_frame_cache,
     replay_button_label,
     runtime_backend_summary,
     snapshot_stream_context,
     single_stream_column_weights,
     stream_grid_columns,
+    stream_source_token,
+    update_stream_frame_cache,
 )
 
 
@@ -29,6 +35,36 @@ def _nonzero_bbox(frame: np.ndarray) -> tuple[int, int, int, int]:
     mask = np.any(frame != 0, axis=2)
     ys, xs = np.where(mask)
     return int(xs.min()), int(ys.min()), int(xs.max() + 1), int(ys.max() + 1)
+
+
+def _snapshot_for_cache(
+    *,
+    stream_id: str = "stream-1",
+    source_token: str = "a" * 64,
+    state: StreamState = StreamState.ACTIVE,
+    frame_version: tuple[int, int] = (0, 1),
+    frame_jpeg: bytes | None = None,
+) -> StreamUISnapshot:
+    return StreamUISnapshot(
+        stream_id=stream_id,
+        display_name="video.mp4",
+        source_type=SourceType.LOCAL,
+        source_token=source_token,
+        state=state,
+        error=None,
+        frame_version=frame_version,
+        frame_jpeg=frame_jpeg,
+        fps=0.0,
+        inference_latency_ms=0.0,
+        end_to_end_latency_ms=0.0,
+        dropped_rate=0.0,
+        in_count=0,
+        out_count=0,
+        occupancy=0,
+        actual_backend=None,
+        actual_device=None,
+        actual_provider=None,
+    )
 
 
 def test_stream_grid_uses_one_bounded_column_for_single_stream() -> None:
@@ -67,13 +103,15 @@ def test_runtime_backend_summary_reports_actual_provider() -> None:
 
 
 def test_runtime_backend_summary_reports_snapshot_actual_provider() -> None:
+    source = VideoSource.from_uri("video.mp4")
     snapshot = StreamUISnapshot(
         stream_id="stream-1",
         display_name="video.mp4",
         source_type=SourceType.LOCAL,
+        source_token=stream_source_token(source),
         state=StreamState.ACTIVE,
         error=None,
-        frame_version=3,
+        frame_version=(0, 3),
         frame_jpeg=None,
         fps=30.0,
         inference_latency_ms=4.0,
@@ -175,6 +213,286 @@ def test_encode_frame_jpeg_returns_decodable_bytes() -> None:
     assert decoded.shape == (UI_CANVAS_HEIGHT, UI_CANVAS_WIDTH, 3)
 
 
+def test_snapshot_uses_composite_frame_version() -> None:
+    context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
+    context.runtime_generation = 7
+    context.metrics.processed_frames = 12
+
+    snapshot = snapshot_stream_context(context)
+
+    assert snapshot.frame_version == (7, 12)
+
+
+def test_snapshot_skips_copy_and_encode_for_unchanged_cached_frame(monkeypatch) -> None:
+    context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
+    context.latest_rendered_frame = np.full((54, 96, 3), 10, dtype=np.uint8)
+    context.runtime_generation = 3
+    context.metrics.processed_frames = 11
+    cached = CachedStreamFrame(
+        source_token=stream_source_token(context.source),
+        frame_version=(3, 11),
+        jpeg=b"cached",
+    )
+    calls = {"copy": 0, "encode": 0}
+
+    def fake_copy(frame: np.ndarray) -> np.ndarray:
+        calls["copy"] += 1
+        return frame.copy()
+
+    def fake_encode(frame: np.ndarray) -> bytes:
+        calls["encode"] += 1
+        return b"encoded"
+
+    monkeypatch.setattr(ui_module, "_copy_frame_for_ui", fake_copy)
+    monkeypatch.setattr(ui_module, "encode_frame_jpeg", fake_encode)
+
+    snapshot = snapshot_stream_context(
+        context,
+        cached_frame=cached,
+        include_frame=True,
+    )
+
+    assert calls == {"copy": 0, "encode": 0}
+    assert snapshot.frame_jpeg is None
+
+
+def test_snapshot_encodes_new_processed_frame_once(monkeypatch) -> None:
+    context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
+    context.latest_rendered_frame = np.full((54, 96, 3), 10, dtype=np.uint8)
+    context.runtime_generation = 3
+    context.metrics.processed_frames = 11
+    cached = CachedStreamFrame(
+        source_token=stream_source_token(context.source),
+        frame_version=(3, 10),
+        jpeg=b"cached",
+    )
+    calls = {"copy": 0, "encode": 0}
+
+    def fake_copy(frame: np.ndarray) -> np.ndarray:
+        calls["copy"] += 1
+        return frame.copy()
+
+    def fake_encode(frame: np.ndarray) -> bytes:
+        calls["encode"] += 1
+        return b"encoded"
+
+    monkeypatch.setattr(ui_module, "_copy_frame_for_ui", fake_copy)
+    monkeypatch.setattr(ui_module, "encode_frame_jpeg", fake_encode)
+
+    snapshot = snapshot_stream_context(
+        context,
+        cached_frame=cached,
+        include_frame=True,
+    )
+
+    assert calls == {"copy": 1, "encode": 1}
+    assert snapshot.frame_version == (3, 11)
+    assert snapshot.frame_jpeg == b"encoded"
+
+
+def test_snapshot_encodes_new_runtime_generation_once(monkeypatch) -> None:
+    context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
+    context.latest_rendered_frame = np.full((54, 96, 3), 10, dtype=np.uint8)
+    context.runtime_generation = 6
+    context.metrics.processed_frames = 1
+    cached = CachedStreamFrame(
+        source_token=stream_source_token(context.source),
+        frame_version=(5, 1),
+        jpeg=b"cached",
+    )
+    calls = {"copy": 0, "encode": 0}
+
+    def fake_copy(frame: np.ndarray) -> np.ndarray:
+        calls["copy"] += 1
+        return frame.copy()
+
+    def fake_encode(frame: np.ndarray) -> bytes:
+        calls["encode"] += 1
+        return b"encoded"
+
+    monkeypatch.setattr(ui_module, "_copy_frame_for_ui", fake_copy)
+    monkeypatch.setattr(ui_module, "encode_frame_jpeg", fake_encode)
+
+    snapshot = snapshot_stream_context(
+        context,
+        cached_frame=cached,
+        include_frame=True,
+    )
+
+    assert calls == {"copy": 1, "encode": 1}
+    assert snapshot.frame_version == (6, 1)
+    assert snapshot.frame_jpeg == b"encoded"
+
+
+def test_snapshot_include_frame_false_skips_copy_and_encode(monkeypatch) -> None:
+    context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
+    context.latest_rendered_frame = np.full((54, 96, 3), 10, dtype=np.uint8)
+    context.metrics.processed_frames = 4
+    context.metrics.fps = 22.0
+    calls = {"copy": 0, "encode": 0}
+
+    def fake_copy(frame: np.ndarray) -> np.ndarray:
+        calls["copy"] += 1
+        return frame.copy()
+
+    def fake_encode(frame: np.ndarray) -> bytes:
+        calls["encode"] += 1
+        return b"encoded"
+
+    monkeypatch.setattr(ui_module, "_copy_frame_for_ui", fake_copy)
+    monkeypatch.setattr(ui_module, "encode_frame_jpeg", fake_encode)
+
+    snapshot = snapshot_stream_context(context, include_frame=False)
+
+    assert calls == {"copy": 0, "encode": 0}
+    assert snapshot.frame_jpeg is None
+    assert snapshot.frame_version == (0, 4)
+    assert snapshot.fps == 22.0
+
+
+@pytest.mark.parametrize("state", [StreamState.STOPPED, StreamState.CONNECTING])
+def test_frame_cache_keeps_image_when_snapshot_has_no_frame(state: StreamState) -> None:
+    cache = {
+        "stream-1": CachedStreamFrame(
+            source_token="a" * 64,
+            frame_version=(1, 2),
+            jpeg=b"cached",
+        )
+    }
+
+    update = update_stream_frame_cache(
+        cache,
+        _snapshot_for_cache(state=state, frame_version=(1, 3), frame_jpeg=None),
+    )
+
+    assert cache["stream-1"].jpeg == b"cached"
+    assert update.render_jpeg is None
+    assert update.clear_image is False
+    assert update.show_waiting is False
+
+
+def test_frame_cache_survives_simulated_full_rerun() -> None:
+    cache: dict[str, CachedStreamFrame] = {}
+    first = _snapshot_for_cache(frame_version=(1, 2), frame_jpeg=b"first")
+
+    first_update = update_stream_frame_cache(cache, first)
+    second_update = update_stream_frame_cache(
+        cache,
+        _snapshot_for_cache(frame_version=(1, 2), frame_jpeg=None),
+    )
+
+    assert first_update.render_jpeg == b"first"
+    assert cache["stream-1"].jpeg == b"first"
+    assert second_update.render_jpeg is None
+    assert second_update.clear_image is False
+    assert second_update.show_waiting is False
+
+
+def test_frame_cache_clears_stale_image_for_source_replacement_without_frame() -> None:
+    cache = {
+        "stream-1": CachedStreamFrame(
+            source_token="a" * 64,
+            frame_version=(1, 2),
+            jpeg=b"cached",
+        )
+    }
+
+    update = update_stream_frame_cache(
+        cache,
+        _snapshot_for_cache(source_token="b" * 64, frame_jpeg=None),
+    )
+
+    assert "stream-1" not in cache
+    assert update.render_jpeg is None
+    assert update.clear_image is True
+    assert update.show_waiting is True
+
+
+def test_frame_cache_replaces_stale_image_when_new_source_frame_is_ready() -> None:
+    cache = {
+        "stream-1": CachedStreamFrame(
+            source_token="a" * 64,
+            frame_version=(1, 2),
+            jpeg=b"cached",
+        )
+    }
+
+    update = update_stream_frame_cache(
+        cache,
+        _snapshot_for_cache(source_token="b" * 64, frame_version=(2, 1), frame_jpeg=b"new"),
+    )
+
+    assert cache["stream-1"].source_token == "b" * 64
+    assert cache["stream-1"].frame_version == (2, 1)
+    assert cache["stream-1"].jpeg == b"new"
+    assert update.render_jpeg == b"new"
+    assert update.clear_image is False
+    assert update.show_waiting is False
+
+
+def test_clear_stream_frame_cache_removes_existing_and_ignores_missing() -> None:
+    cache = {
+        "stream-1": CachedStreamFrame(
+            source_token="a" * 64,
+            frame_version=(1, 2),
+            jpeg=b"cached",
+        )
+    }
+
+    clear_stream_frame_cache(cache, "stream-1")
+    clear_stream_frame_cache(cache, "missing")
+
+    assert cache == {}
+
+
+def test_prune_stream_frame_cache_keeps_only_active_matching_sources() -> None:
+    cache = {
+        "matching": CachedStreamFrame("a" * 64, (1, 1), b"matching"),
+        "mismatch": CachedStreamFrame("b" * 64, (1, 1), b"mismatch"),
+        "removed": CachedStreamFrame("c" * 64, (1, 1), b"removed"),
+    }
+
+    prune_stream_frame_cache(cache, {"matching": "a" * 64, "mismatch": "x" * 64})
+
+    assert cache == {
+        "matching": CachedStreamFrame("a" * 64, (1, 1), b"matching")
+    }
+
+
+def test_stream_source_token_is_stable_hashed_source_identity() -> None:
+    local = VideoSource.from_uri("video.mp4")
+    same_local = VideoSource.from_uri("video.mp4")
+    other_uri = VideoSource.from_uri("other.mp4")
+    same_uri_different_type = VideoSource(
+        uri="video.mp4",
+        source_type=SourceType.RTSP,
+        display_name="video.mp4",
+    )
+    remote = VideoSource.from_uri("rtsp://user:pass@example.test/stream?token=secret")
+
+    token = stream_source_token(local)
+
+    assert token == stream_source_token(same_local)
+    assert token != stream_source_token(other_uri)
+    assert token != stream_source_token(same_uri_different_type)
+    assert remote.uri not in stream_source_token(remote)
+    assert len(token) == 64
+    assert token == token.lower()
+    assert all(item in "0123456789abcdef" for item in token)
+
+
+def test_cached_jpeg_bytes_are_independent_from_source_frame_mutation() -> None:
+    frame = np.full((54, 96, 3), 90, dtype=np.uint8)
+    payload = encode_frame_jpeg(frame)
+    cache: dict[str, CachedStreamFrame] = {}
+
+    update_stream_frame_cache(cache, _snapshot_for_cache(frame_jpeg=payload))
+    frame[:] = 0
+
+    assert isinstance(cache["stream-1"].jpeg, bytes)
+    assert cache["stream-1"].jpeg == payload
+
+
 def test_snapshot_without_frame_copies_scalar_fields() -> None:
     context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
     context.force_state(StreamState.ACTIVE)
@@ -193,10 +511,11 @@ def test_snapshot_without_frame_copies_scalar_fields() -> None:
     snapshot = snapshot_stream_context(context)
 
     assert snapshot.frame_jpeg is None
-    assert snapshot.frame_version == 12
+    assert snapshot.frame_version == (0, 12)
     assert snapshot.stream_id == "stream-1"
     assert snapshot.display_name == "video.mp4"
     assert snapshot.source_type is SourceType.LOCAL
+    assert snapshot.source_token == stream_source_token(context.source)
     assert snapshot.state is StreamState.ACTIVE
     assert snapshot.error == "temporary"
     assert snapshot.fps == 24.0
@@ -244,7 +563,7 @@ def test_snapshot_is_independent_from_context_mutation() -> None:
         cv2.IMREAD_COLOR,
     )
 
-    assert snapshot.frame_version == 5
+    assert snapshot.frame_version == (0, 5)
     assert snapshot.fps == 18.0
     assert snapshot.dropped_rate == 0.125
     assert snapshot.in_count == 2
@@ -298,7 +617,7 @@ def test_snapshot_uses_context_lock_for_consistent_state() -> None:
     thread.join(timeout=1.0)
     snapshot = holder["snapshot"]
     assert snapshot.state is StreamState.ACTIVE
-    assert snapshot.frame_version == 9
+    assert snapshot.frame_version == (0, 9)
     assert snapshot.fps == 27.0
     assert snapshot.inference_latency_ms == 4.0
     assert snapshot.end_to_end_latency_ms == 6.0
