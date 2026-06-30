@@ -118,6 +118,7 @@ class ProcessingEngine:
             context.metrics = type(context.metrics)()
             context.latest_frame = None
             context.latest_rendered_frame = None
+            context.latest_rendered_version = None
             context.latest_detections = None
             context.trajectories.clear()
             context.actual_backend = None
@@ -252,7 +253,10 @@ class ProcessingEngine:
         self._reset_context_runtime(context, source=source_obj)
 
     def reset_counters(self, stream_id: str) -> None:
-        self.get(stream_id).counter.reset()
+        context = self.get(stream_id)
+        with context.lock:
+            if context.counter is not None:
+                context.counter.reset()
 
     def update_options(self, stream_id: str, **changes) -> None:
         context = self.get(stream_id)

@@ -19,17 +19,19 @@ from vision_track.lifecycle import StreamState
 from vision_track.streamlit_state import ENGINE_KEY
 from vision_track.ui import (
     CachedStreamFrame,
+    StreamMetricsSnapshot,
     StreamFrameUpdate,
-    StreamUISnapshot,
     clear_stream_frame_cache,
     prune_stream_frame_cache,
     replay_button_label,
     runtime_backend_summary,
     single_stream_column_weights,
-    snapshot_stream_context,
+    snapshot_stream_frame,
+    snapshot_stream_metrics,
     stream_grid_columns,
     stream_source_token,
     update_stream_frame_cache,
+    waiting_slot_transition,
 )
 
 
@@ -47,6 +49,7 @@ def _engine_for_backend(backend_name: str) -> ProcessingEngine:
     existing = st.session_state.get(ENGINE_KEY)
     existing_backend = st.session_state.get("vision_backend")
     if existing is None or existing_backend != backend_name or getattr(existing, "_shutdown", False):
+        frame_cache.clear()
         snapshots = []
         if existing is not None:
             snapshots = [
@@ -133,89 +136,160 @@ with st.sidebar:
         placeholder="No streams",
     )
 
-    if selected_id:
-        selected = engine.get(selected_id)
-        st.caption(
-            runtime_backend_summary(
-                selected,
-                requested_backend=engine.detector.name,
-                requested_device=engine.device.kind,
-            )
-        )
-        confidence = st.slider(
-            "Confidence", 0.05, 0.95, float(selected.options.confidence), 0.05
-        )
-        iou = st.slider("IoU threshold", 0.10, 0.90, float(selected.options.iou), 0.05)
-        detection_enabled = st.toggle(
-            "Detection", value=selected.options.detection_enabled
-        )
-        tracking_enabled = st.toggle(
-            "Tracking", value=selected.options.tracking_enabled
-        )
-        counting_enabled = st.toggle(
-            "Counting", value=selected.options.counting_enabled
-        )
-        activation = st.slider(
-            "Track activation",
-            0.05,
-            0.90,
-            float(selected.tracker.settings.track_activation_threshold),
-            0.05,
-        )
-        lost_buffer = st.number_input(
-            "Lost track buffer",
-            min_value=1,
-            max_value=300,
-            value=int(selected.tracker.settings.lost_track_buffer),
-        )
-        matching = st.slider(
-            "Matching threshold",
-            0.10,
-            0.99,
-            float(selected.tracker.settings.minimum_matching_threshold),
-            0.01,
-        )
-        if st.button("Apply stream settings", use_container_width=True):
-            engine.update_options(
-                selected_id,
-                confidence=confidence,
-                iou=iou,
-                detection_enabled=detection_enabled,
-                tracking_enabled=tracking_enabled,
-                counting_enabled=counting_enabled,
-            )
-            if (
-                activation != selected.tracker.settings.track_activation_threshold
-                or lost_buffer != selected.tracker.settings.lost_track_buffer
-                or matching != selected.tracker.settings.minimum_matching_threshold
-            ):
-                engine.update_tracker(
-                    selected_id,
-                    track_activation_threshold=activation,
-                    lost_track_buffer=int(lost_buffer),
-                    minimum_matching_threshold=matching,
+    @st.fragment
+    def render_sidebar_stream_controls(
+        selected_stream_id: str | None,
+        control_stream_ids: tuple[str, ...],
+    ) -> None:
+        selected_context = None
+        if selected_stream_id:
+            try:
+                selected_context = engine.get(selected_stream_id)
+            except KeyError:
+                selected_context = None
+
+        if selected_context is not None:
+            stream_id = selected_context.stream_id
+            st.caption(
+                runtime_backend_summary(
+                    selected_context,
+                    requested_backend=engine.detector.name,
+                    requested_device=engine.device.kind,
                 )
+            )
+            with st.form(key=f"sidebar-settings-{stream_id}"):
+                confidence = st.slider(
+                    "Confidence",
+                    0.05,
+                    0.95,
+                    float(selected_context.options.confidence),
+                    0.05,
+                    key=f"sidebar-confidence-{stream_id}",
+                )
+                iou = st.slider(
+                    "IoU threshold",
+                    0.10,
+                    0.90,
+                    float(selected_context.options.iou),
+                    0.05,
+                    key=f"sidebar-iou-{stream_id}",
+                )
+                detection_enabled = st.toggle(
+                    "Detection",
+                    value=selected_context.options.detection_enabled,
+                    key=f"sidebar-detection-{stream_id}",
+                )
+                tracking_enabled = st.toggle(
+                    "Tracking",
+                    value=selected_context.options.tracking_enabled,
+                    key=f"sidebar-tracking-{stream_id}",
+                )
+                counting_enabled = st.toggle(
+                    "Counting",
+                    value=selected_context.options.counting_enabled,
+                    key=f"sidebar-counting-{stream_id}",
+                )
+                activation = st.slider(
+                    "Track activation",
+                    0.05,
+                    0.90,
+                    float(selected_context.tracker.settings.track_activation_threshold),
+                    0.05,
+                    key=f"sidebar-track-activation-{stream_id}",
+                )
+                lost_buffer = st.number_input(
+                    "Lost track buffer",
+                    min_value=1,
+                    max_value=300,
+                    value=int(selected_context.tracker.settings.lost_track_buffer),
+                    key=f"sidebar-lost-buffer-{stream_id}",
+                )
+                matching = st.slider(
+                    "Matching threshold",
+                    0.10,
+                    0.99,
+                    float(selected_context.tracker.settings.minimum_matching_threshold),
+                    0.01,
+                    key=f"sidebar-matching-{stream_id}",
+                )
+                apply_settings = st.form_submit_button(
+                    "Apply stream settings",
+                    use_container_width=True,
+                )
+            if apply_settings:
+                engine.update_options(
+                    stream_id,
+                    confidence=confidence,
+                    iou=iou,
+                    detection_enabled=detection_enabled,
+                    tracking_enabled=tracking_enabled,
+                    counting_enabled=counting_enabled,
+                )
+                if (
+                    activation
+                    != selected_context.tracker.settings.track_activation_threshold
+                    or lost_buffer != selected_context.tracker.settings.lost_track_buffer
+                    or matching
+                    != selected_context.tracker.settings.minimum_matching_threshold
+                ):
+                    engine.update_tracker(
+                        stream_id,
+                        track_activation_threshold=activation,
+                        lost_track_buffer=int(lost_buffer),
+                        minimum_matching_threshold=matching,
+                    )
 
-        first, second = st.columns(2)
-        if first.button("Start", use_container_width=True):
-            engine.start(selected_id)
-        if second.button("Stop", use_container_width=True):
-            engine.stop(selected_id)
-        if first.button(replay_button_label(selected), use_container_width=True):
-            engine.restart(selected_id)
-        if second.button("Reset counters", use_container_width=True):
-            engine.reset_counters(selected_id)
-        if st.button("Remove stream", use_container_width=True):
-            clear_stream_frame_cache(frame_cache, selected_id)
-            engine.remove(selected_id)
-            st.rerun()
+            first, second = st.columns(2)
+            if first.button(
+                "Start",
+                key=f"sidebar-start-{stream_id}",
+                use_container_width=True,
+            ):
+                engine.start(stream_id)
+            if second.button(
+                "Stop",
+                key=f"sidebar-stop-{stream_id}",
+                use_container_width=True,
+            ):
+                engine.stop(stream_id)
+            if first.button(
+                replay_button_label(selected_context),
+                key=f"sidebar-restart-{stream_id}",
+                use_container_width=True,
+            ):
+                engine.restart(stream_id)
+            if second.button(
+                "Reset counters",
+                key=f"sidebar-reset-{stream_id}",
+                use_container_width=True,
+            ):
+                engine.reset_counters(stream_id)
 
-    if contexts:
-        left, right = st.columns(2)
-        if left.button("Start all", use_container_width=True):
-            engine.start_all()
-        if right.button("Stop all", use_container_width=True):
-            engine.stop_all()
+        if control_stream_ids:
+            left, right = st.columns(2)
+            if left.button(
+                "Start all",
+                key="sidebar-start-all",
+                use_container_width=True,
+            ):
+                engine.start_all()
+            if right.button(
+                "Stop all",
+                key="sidebar-stop-all",
+                use_container_width=True,
+            ):
+                engine.stop_all()
+
+    render_sidebar_stream_controls(selected_id, tuple(stream_ids))
+
+    if selected_id and st.button(
+        "Remove stream",
+        key=f"sidebar-remove-{selected_id}",
+        use_container_width=True,
+    ):
+        clear_stream_frame_cache(frame_cache, selected_id)
+        engine.remove(selected_id)
+        st.rerun()
 
 
 st.title("VisionTrack")
@@ -226,7 +300,7 @@ def _metric_value(value: float, suffix: str = "") -> str:
     return f"{value:.1f}{suffix}" if value else f"0.0{suffix}"
 
 
-def _stream_metrics_caption(snapshot: StreamUISnapshot) -> str:
+def _stream_metrics_caption(snapshot: StreamMetricsSnapshot) -> str:
     return (
         f"{snapshot.state.value} · FPS {_metric_value(snapshot.fps)} · "
         f"inference {_metric_value(snapshot.inference_latency_ms, ' ms')} · "
@@ -236,32 +310,37 @@ def _stream_metrics_caption(snapshot: StreamUISnapshot) -> str:
     )
 
 
-def _render_detail_controls(context) -> None:
+@st.fragment
+def render_detail_controls(stream_id: str) -> None:
+    try:
+        context = engine.get(stream_id)
+    except KeyError:
+        return
     control_columns = st.columns(4)
     if control_columns[0].button(
         "Start",
-        key=f"detail-start-{context.stream_id}",
+        key=f"detail-start-{stream_id}",
         use_container_width=True,
     ):
-        engine.start(context.stream_id)
+        engine.start(stream_id)
     if control_columns[1].button(
         "Stop",
-        key=f"detail-stop-{context.stream_id}",
+        key=f"detail-stop-{stream_id}",
         use_container_width=True,
     ):
-        engine.stop(context.stream_id)
+        engine.stop(stream_id)
     if control_columns[2].button(
         replay_button_label(context),
-        key=f"detail-restart-{context.stream_id}",
+        key=f"detail-restart-{stream_id}",
         use_container_width=True,
     ):
-        engine.restart(context.stream_id)
+        engine.restart(stream_id)
     if control_columns[3].button(
         "Reset counters",
-        key=f"detail-reset-{context.stream_id}",
+        key=f"detail-reset-{stream_id}",
         use_container_width=True,
     ):
-        engine.reset_counters(context.stream_id)
+        engine.reset_counters(stream_id)
 
 
 dashboard_contexts = contexts
@@ -269,6 +348,7 @@ dashboard_stream_ids = [context.stream_id for context in dashboard_contexts]
 dashboard_requested_backend = engine.detector.name
 dashboard_requested_device = engine.device.kind
 stream_placeholders: dict[str, dict[str, object]] = {}
+waiting_visible: dict[str, bool] = {}
 detail_metric_placeholders = []
 detail_runtime_placeholder = None
 detail_stream_id = None
@@ -298,8 +378,10 @@ else:
                     width="stretch",
                 )
                 waiting_placeholder.empty()
+                waiting_visible[context.stream_id] = False
             else:
                 waiting_placeholder.caption("Waiting for frames")
+                waiting_visible[context.stream_id] = True
             stream_placeholders[context.stream_id] = {
                 "image": image_placeholder,
                 "waiting": waiting_placeholder,
@@ -318,7 +400,7 @@ else:
             metric_columns = st.columns(8)
             detail_metric_placeholders = [column.empty() for column in metric_columns]
             detail_runtime_placeholder = st.empty()
-            _render_detail_controls(detail_context)
+            render_detail_controls(detail_stream_id)
 
 @st.fragment(run_every=0.01)
 def render_stream_images() -> None:
@@ -331,10 +413,9 @@ def render_stream_images() -> None:
         if placeholders is None:
             continue
         cached = frame_cache.get(stream_id)
-        snapshot = snapshot_stream_context(
+        snapshot = snapshot_stream_frame(
             context,
             cached_frame=cached,
-            include_frame=True,
         )
         update: StreamFrameUpdate = update_stream_frame_cache(frame_cache, snapshot)
 
@@ -347,25 +428,27 @@ def render_stream_images() -> None:
                 update.render_jpeg,
                 width="stretch",
             )
-        if update.show_waiting:
+        transition = waiting_slot_transition(
+            waiting_visible[stream_id],
+            update.show_waiting,
+        )
+        if transition is True:
             waiting_placeholder.caption("Waiting for frames")
-        else:
+            waiting_visible[stream_id] = True
+        elif transition is False:
             waiting_placeholder.empty()
+            waiting_visible[stream_id] = False
 
 
 @st.fragment(run_every=0.25)
 def render_stream_metrics() -> None:
-    snapshots: dict[str, StreamUISnapshot] = {}
+    snapshots: dict[str, StreamMetricsSnapshot] = {}
     for stream_id in dashboard_stream_ids:
         try:
             context = engine.get(stream_id)
         except KeyError:
             continue
-        snapshots[stream_id] = snapshot_stream_context(
-            context,
-            cached_frame=None,
-            include_frame=False,
-        )
+        snapshots[stream_id] = snapshot_stream_metrics(context)
 
     for stream_id, placeholders in stream_placeholders.items():
         snapshot = snapshots.get(stream_id)
@@ -408,5 +491,6 @@ def render_stream_metrics() -> None:
         )
 
 
-render_stream_images()
-render_stream_metrics()
+if dashboard_stream_ids:
+    render_stream_images()
+    render_stream_metrics()

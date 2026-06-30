@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-import threading
 
 import cv2
 import numpy as np
@@ -10,24 +9,26 @@ import pytest
 import vision_track.ui as ui_module
 from vision_track.context import StreamContext
 from vision_track.lifecycle import StreamState
-from vision_track.sources import SourceType
-from vision_track.sources import VideoSource
+from vision_track.sources import SourceType, VideoSource
 from vision_track.ui import (
     CachedStreamFrame,
+    StreamFrameSnapshot,
+    StreamMetricsSnapshot,
     UI_CANVAS_HEIGHT,
     UI_CANVAS_WIDTH,
-    StreamUISnapshot,
     clear_stream_frame_cache,
     encode_frame_jpeg,
     fit_frame_to_canvas,
     prune_stream_frame_cache,
     replay_button_label,
     runtime_backend_summary,
-    snapshot_stream_context,
     single_stream_column_weights,
+    snapshot_stream_frame,
+    snapshot_stream_metrics,
     stream_grid_columns,
     stream_source_token,
     update_stream_frame_cache,
+    waiting_slot_transition,
 )
 
 
@@ -41,29 +42,42 @@ def _snapshot_for_cache(
     *,
     stream_id: str = "stream-1",
     source_token: str = "a" * 64,
-    state: StreamState = StreamState.ACTIVE,
-    frame_version: tuple[int, int] = (0, 1),
+    frame_version: tuple[int, int] | None = (0, 1),
     frame_jpeg: bytes | None = None,
-) -> StreamUISnapshot:
-    return StreamUISnapshot(
+) -> StreamFrameSnapshot:
+    return StreamFrameSnapshot(
         stream_id=stream_id,
-        display_name="video.mp4",
-        source_type=SourceType.LOCAL,
         source_token=source_token,
-        state=state,
-        error=None,
         frame_version=frame_version,
         frame_jpeg=frame_jpeg,
-        fps=0.0,
-        inference_latency_ms=0.0,
-        end_to_end_latency_ms=0.0,
+    )
+
+
+def _metrics_snapshot(
+    *,
+    actual_backend: str | None = None,
+    actual_device: str | None = None,
+    actual_provider: str | None = None,
+) -> StreamMetricsSnapshot:
+    source = VideoSource.from_uri("video.mp4")
+    return StreamMetricsSnapshot(
+        stream_id="stream-1",
+        display_name=source.display_name,
+        source_type=source.source_type,
+        source_token=stream_source_token(source),
+        state=StreamState.ACTIVE,
+        error=None,
+        processed_frames=12,
+        fps=30.0,
+        inference_latency_ms=4.0,
+        end_to_end_latency_ms=8.0,
         dropped_rate=0.0,
-        in_count=0,
-        out_count=0,
-        occupancy=0,
-        actual_backend=None,
-        actual_device=None,
-        actual_provider=None,
+        in_count=1,
+        out_count=2,
+        occupancy=3,
+        actual_backend=actual_backend,
+        actual_device=actual_device,
+        actual_provider=actual_provider,
     )
 
 
@@ -88,7 +102,7 @@ def test_runtime_backend_summary_is_pending_before_first_inference() -> None:
     assert "pending first inference" in summary
 
 
-def test_runtime_backend_summary_reports_actual_provider() -> None:
+def test_runtime_backend_summary_reports_actual_provider_from_context() -> None:
     context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
     context.actual_backend = "onnxruntime"
     context.actual_device = "cpu"
@@ -102,24 +116,8 @@ def test_runtime_backend_summary_reports_actual_provider() -> None:
     assert "provider `CPUExecutionProvider`" in summary
 
 
-def test_runtime_backend_summary_reports_snapshot_actual_provider() -> None:
-    source = VideoSource.from_uri("video.mp4")
-    snapshot = StreamUISnapshot(
-        stream_id="stream-1",
-        display_name="video.mp4",
-        source_type=SourceType.LOCAL,
-        source_token=stream_source_token(source),
-        state=StreamState.ACTIVE,
-        error=None,
-        frame_version=(0, 3),
-        frame_jpeg=None,
-        fps=30.0,
-        inference_latency_ms=4.0,
-        end_to_end_latency_ms=8.0,
-        dropped_rate=0.0,
-        in_count=1,
-        out_count=2,
-        occupancy=3,
+def test_runtime_backend_summary_reports_metrics_snapshot_actual_provider() -> None:
+    snapshot = _metrics_snapshot(
         actual_backend="onnxruntime",
         actual_device="cpu",
         actual_provider="CPUExecutionProvider",
@@ -201,6 +199,32 @@ def test_fit_frame_to_canvas_rejects_invalid_input(frame: np.ndarray) -> None:
         fit_frame_to_canvas(frame)
 
 
+@pytest.mark.parametrize(
+    ("shape", "expected_width", "expected_height"),
+    [
+        ((1920, 1080, 3), 304, UI_CANVAS_HEIGHT),
+        ((400, 400, 3), UI_CANVAS_HEIGHT, UI_CANVAS_HEIGHT),
+    ],
+)
+def test_fit_frame_to_canvas_preserves_content_aspect(
+    shape: tuple[int, int, int],
+    expected_width: int,
+    expected_height: int,
+) -> None:
+    canvas = fit_frame_to_canvas(np.full(shape, 100, dtype=np.uint8))
+
+    x0, y0, x1, y1 = _nonzero_bbox(canvas)
+    actual_width = x1 - x0
+    actual_height = y1 - y0
+    expected_x0 = (UI_CANVAS_WIDTH - expected_width) // 2
+    expected_y0 = (UI_CANVAS_HEIGHT - expected_height) // 2
+
+    assert abs(actual_width - expected_width) <= 1
+    assert abs(actual_height - expected_height) <= 1
+    assert abs(x0 - expected_x0) <= 1
+    assert abs(y0 - expected_y0) <= 1
+
+
 def test_encode_frame_jpeg_returns_decodable_bytes() -> None:
     frame = np.full((360, 640, 3), 120, dtype=np.uint8)
 
@@ -213,21 +237,22 @@ def test_encode_frame_jpeg_returns_decodable_bytes() -> None:
     assert decoded.shape == (UI_CANVAS_HEIGHT, UI_CANVAS_WIDTH, 3)
 
 
-def test_snapshot_uses_composite_frame_version() -> None:
+def test_frame_snapshot_uses_published_version() -> None:
     context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
-    context.runtime_generation = 7
-    context.metrics.processed_frames = 12
+    context.latest_rendered_version = (7, 12)
+    context.latest_rendered_frame = np.full((54, 96, 3), 10, dtype=np.uint8)
+    context.metrics.processed_frames = 999
+    context.runtime_generation = 100
 
-    snapshot = snapshot_stream_context(context)
+    snapshot = snapshot_stream_frame(context, cached_frame=None)
 
     assert snapshot.frame_version == (7, 12)
 
 
-def test_snapshot_skips_copy_and_encode_for_unchanged_cached_frame(monkeypatch) -> None:
+def test_unchanged_published_frame_skips_copy_and_encode(monkeypatch) -> None:
     context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
+    context.latest_rendered_version = (3, 11)
     context.latest_rendered_frame = np.full((54, 96, 3), 10, dtype=np.uint8)
-    context.runtime_generation = 3
-    context.metrics.processed_frames = 11
     cached = CachedStreamFrame(
         source_token=stream_source_token(context.source),
         frame_version=(3, 11),
@@ -246,24 +271,57 @@ def test_snapshot_skips_copy_and_encode_for_unchanged_cached_frame(monkeypatch) 
     monkeypatch.setattr(ui_module, "_copy_frame_for_ui", fake_copy)
     monkeypatch.setattr(ui_module, "encode_frame_jpeg", fake_encode)
 
-    snapshot = snapshot_stream_context(
-        context,
-        cached_frame=cached,
-        include_frame=True,
-    )
+    snapshot = snapshot_stream_frame(context, cached_frame=cached)
 
     assert calls == {"copy": 0, "encode": 0}
     assert snapshot.frame_jpeg is None
 
 
-def test_snapshot_encodes_new_processed_frame_once(monkeypatch) -> None:
+def test_runtime_generation_change_without_new_published_frame_preserves_cache(
+    monkeypatch,
+) -> None:
     context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
+    context.runtime_generation = 4
+    context.latest_rendered_version = (4, 20)
     context.latest_rendered_frame = np.full((54, 96, 3), 10, dtype=np.uint8)
-    context.runtime_generation = 3
-    context.metrics.processed_frames = 11
     cached = CachedStreamFrame(
         source_token=stream_source_token(context.source),
-        frame_version=(3, 10),
+        frame_version=(4, 20),
+        jpeg=b"cached",
+    )
+    cache = {"stream-1": cached}
+    calls = {"copy": 0, "encode": 0}
+
+    def fake_copy(frame: np.ndarray) -> np.ndarray:
+        calls["copy"] += 1
+        return frame.copy()
+
+    def fake_encode(frame: np.ndarray) -> bytes:
+        calls["encode"] += 1
+        return b"encoded"
+
+    monkeypatch.setattr(ui_module, "_copy_frame_for_ui", fake_copy)
+    monkeypatch.setattr(ui_module, "encode_frame_jpeg", fake_encode)
+    context.runtime_generation = 5
+
+    snapshot = snapshot_stream_frame(context, cached_frame=cached)
+    update = update_stream_frame_cache(cache, snapshot)
+
+    assert snapshot.frame_version == (4, 20)
+    assert calls == {"copy": 0, "encode": 0}
+    assert cache["stream-1"] == cached
+    assert update.render_jpeg is None
+    assert update.clear_image is False
+    assert update.show_waiting is False
+
+
+def test_new_published_frame_encodes_once(monkeypatch) -> None:
+    context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
+    context.latest_rendered_version = (4, 21)
+    context.latest_rendered_frame = np.full((54, 96, 3), 10, dtype=np.uint8)
+    cached = CachedStreamFrame(
+        source_token=stream_source_token(context.source),
+        frame_version=(4, 20),
         jpeg=b"cached",
     )
     calls = {"copy": 0, "encode": 0}
@@ -279,25 +337,20 @@ def test_snapshot_encodes_new_processed_frame_once(monkeypatch) -> None:
     monkeypatch.setattr(ui_module, "_copy_frame_for_ui", fake_copy)
     monkeypatch.setattr(ui_module, "encode_frame_jpeg", fake_encode)
 
-    snapshot = snapshot_stream_context(
-        context,
-        cached_frame=cached,
-        include_frame=True,
-    )
+    snapshot = snapshot_stream_frame(context, cached_frame=cached)
 
     assert calls == {"copy": 1, "encode": 1}
-    assert snapshot.frame_version == (3, 11)
+    assert snapshot.frame_version == (4, 21)
     assert snapshot.frame_jpeg == b"encoded"
 
 
-def test_snapshot_encodes_new_runtime_generation_once(monkeypatch) -> None:
+def test_new_runtime_with_same_frame_index_encodes_once(monkeypatch) -> None:
     context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
+    context.latest_rendered_version = (5, 0)
     context.latest_rendered_frame = np.full((54, 96, 3), 10, dtype=np.uint8)
-    context.runtime_generation = 6
-    context.metrics.processed_frames = 1
     cached = CachedStreamFrame(
         source_token=stream_source_token(context.source),
-        frame_version=(5, 1),
+        frame_version=(4, 0),
         jpeg=b"cached",
     )
     calls = {"copy": 0, "encode": 0}
@@ -313,22 +366,18 @@ def test_snapshot_encodes_new_runtime_generation_once(monkeypatch) -> None:
     monkeypatch.setattr(ui_module, "_copy_frame_for_ui", fake_copy)
     monkeypatch.setattr(ui_module, "encode_frame_jpeg", fake_encode)
 
-    snapshot = snapshot_stream_context(
-        context,
-        cached_frame=cached,
-        include_frame=True,
-    )
+    snapshot = snapshot_stream_frame(context, cached_frame=cached)
 
+    assert snapshot.frame_version == (5, 0)
+    assert snapshot.frame_version != cached.frame_version
     assert calls == {"copy": 1, "encode": 1}
-    assert snapshot.frame_version == (6, 1)
     assert snapshot.frame_jpeg == b"encoded"
 
 
-def test_snapshot_include_frame_false_skips_copy_and_encode(monkeypatch) -> None:
+def test_no_published_version_skips_copy_and_encode(monkeypatch) -> None:
     context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
+    context.latest_rendered_version = None
     context.latest_rendered_frame = np.full((54, 96, 3), 10, dtype=np.uint8)
-    context.metrics.processed_frames = 4
-    context.metrics.fps = 22.0
     calls = {"copy": 0, "encode": 0}
 
     def fake_copy(frame: np.ndarray) -> np.ndarray:
@@ -342,30 +391,138 @@ def test_snapshot_include_frame_false_skips_copy_and_encode(monkeypatch) -> None
     monkeypatch.setattr(ui_module, "_copy_frame_for_ui", fake_copy)
     monkeypatch.setattr(ui_module, "encode_frame_jpeg", fake_encode)
 
-    snapshot = snapshot_stream_context(context, include_frame=False)
+    snapshot = snapshot_stream_frame(context, cached_frame=None)
 
     assert calls == {"copy": 0, "encode": 0}
     assert snapshot.frame_jpeg is None
-    assert snapshot.frame_version == (0, 4)
-    assert snapshot.fps == 22.0
+
+
+def test_metrics_snapshot_does_not_access_frame_encoder(monkeypatch) -> None:
+    context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
+    context.force_state(StreamState.ACTIVE)
+    context.error = "temporary"
+    context.metrics.processed_frames = 12
+    context.metrics.fps = 24.0
+    context.metrics.inference_latency_ms = 7.5
+    context.metrics.end_to_end_latency_ms = 12.5
+    context.queue.received = 10
+    context.queue.dropped = 2
+    context.counter = SimpleNamespace(in_count=3, out_count=4, occupancy=5)
+    context.actual_backend = "pytorch"
+    context.actual_device = "cuda"
+    context.actual_provider = None
+    context.latest_rendered_version = (1, 2)
+    context.latest_rendered_frame = np.full((54, 96, 3), 10, dtype=np.uint8)
+
+    monkeypatch.setattr(
+        ui_module,
+        "_copy_frame_for_ui",
+        lambda frame: pytest.fail("metrics snapshot copied a frame"),
+    )
+    monkeypatch.setattr(
+        ui_module,
+        "encode_frame_jpeg",
+        lambda frame: pytest.fail("metrics snapshot encoded a frame"),
+    )
+
+    snapshot = snapshot_stream_metrics(context)
+
+    assert snapshot.stream_id == "stream-1"
+    assert snapshot.display_name == "video.mp4"
+    assert snapshot.source_type is SourceType.LOCAL
+    assert snapshot.source_token == stream_source_token(context.source)
+    assert snapshot.state is StreamState.ACTIVE
+    assert snapshot.error == "temporary"
+    assert snapshot.processed_frames == 12
+    assert snapshot.fps == 24.0
+    assert snapshot.inference_latency_ms == 7.5
+    assert snapshot.end_to_end_latency_ms == 12.5
+    assert snapshot.dropped_rate == 0.2
+    assert snapshot.in_count == 3
+    assert snapshot.out_count == 4
+    assert snapshot.occupancy == 5
+    assert snapshot.actual_backend == "pytorch"
+    assert snapshot.actual_device == "cuda"
+    assert snapshot.actual_provider is None
+
+
+def test_metrics_snapshot_uses_atomic_queue_stats(monkeypatch) -> None:
+    context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
+    calls = {"snapshot_stats": 0}
+
+    def fake_snapshot_stats() -> tuple[int, int]:
+        calls["snapshot_stats"] += 1
+        return 10, 3
+
+    monkeypatch.setattr(context.queue, "snapshot_stats", fake_snapshot_stats)
+
+    snapshot = snapshot_stream_metrics(context)
+
+    assert calls == {"snapshot_stats": 1}
+    assert snapshot.dropped_rate == pytest.approx(0.3)
+
+
+@pytest.mark.parametrize(
+    ("previous_visible", "desired_visible", "expected"),
+    [
+        (False, False, None),
+        (True, True, None),
+        (False, True, True),
+        (True, False, False),
+    ],
+)
+def test_waiting_slot_transition(
+    previous_visible: bool,
+    desired_visible: bool,
+    expected: bool | None,
+) -> None:
+    assert waiting_slot_transition(previous_visible, desired_visible) is expected
 
 
 @pytest.mark.parametrize("state", [StreamState.STOPPED, StreamState.CONNECTING])
-def test_frame_cache_keeps_image_when_snapshot_has_no_frame(state: StreamState) -> None:
-    cache = {
-        "stream-1": CachedStreamFrame(
-            source_token="a" * 64,
-            frame_version=(1, 2),
-            jpeg=b"cached",
-        )
-    }
+def test_frame_cache_keeps_image_when_state_changes_without_new_frame(
+    state: StreamState,
+    monkeypatch,
+) -> None:
+    context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
+    context.force_state(state)
+    context.latest_rendered_version = (1, 2)
+    context.latest_rendered_frame = np.full((54, 96, 3), 10, dtype=np.uint8)
+    cached = CachedStreamFrame(
+        source_token=stream_source_token(context.source),
+        frame_version=(1, 2),
+        jpeg=b"cached",
+    )
+    cache = {"stream-1": cached}
 
-    update = update_stream_frame_cache(
-        cache,
-        _snapshot_for_cache(state=state, frame_version=(1, 3), frame_jpeg=None),
+    monkeypatch.setattr(
+        ui_module,
+        "encode_frame_jpeg",
+        lambda frame: pytest.fail("state-only change encoded a frame"),
     )
 
+    snapshot = snapshot_stream_frame(context, cached_frame=cached)
+    update = update_stream_frame_cache(cache, snapshot)
+
     assert cache["stream-1"].jpeg == b"cached"
+    assert update.render_jpeg is None
+    assert update.clear_image is False
+    assert update.show_waiting is False
+
+
+def test_frame_cache_keeps_image_after_reset_without_frame() -> None:
+    context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
+    cached = CachedStreamFrame(
+        source_token=stream_source_token(context.source),
+        frame_version=(1, 2),
+        jpeg=b"cached",
+    )
+    cache = {"stream-1": cached}
+
+    snapshot = snapshot_stream_frame(context, cached_frame=cached)
+    update = update_stream_frame_cache(cache, snapshot)
+
+    assert cache["stream-1"] == cached
     assert update.render_jpeg is None
     assert update.clear_image is False
     assert update.show_waiting is False
@@ -430,6 +587,16 @@ def test_frame_cache_replaces_stale_image_when_new_source_frame_is_ready() -> No
     assert update.show_waiting is False
 
 
+def test_frame_cache_rejects_versionless_frame_update() -> None:
+    cache: dict[str, CachedStreamFrame] = {}
+
+    with pytest.raises(RuntimeError):
+        update_stream_frame_cache(
+            cache,
+            _snapshot_for_cache(frame_version=None, frame_jpeg=b"invalid"),
+        )
+
+
 def test_clear_stream_frame_cache_removes_existing_and_ignores_missing() -> None:
     cache = {
         "stream-1": CachedStreamFrame(
@@ -491,165 +658,3 @@ def test_cached_jpeg_bytes_are_independent_from_source_frame_mutation() -> None:
 
     assert isinstance(cache["stream-1"].jpeg, bytes)
     assert cache["stream-1"].jpeg == payload
-
-
-def test_snapshot_without_frame_copies_scalar_fields() -> None:
-    context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
-    context.force_state(StreamState.ACTIVE)
-    context.error = "temporary"
-    context.metrics.processed_frames = 12
-    context.metrics.fps = 24.0
-    context.metrics.inference_latency_ms = 7.5
-    context.metrics.end_to_end_latency_ms = 12.5
-    context.queue.received = 10
-    context.queue.dropped = 2
-    context.counter = SimpleNamespace(in_count=3, out_count=4, occupancy=5)
-    context.actual_backend = "pytorch"
-    context.actual_device = "cuda"
-    context.actual_provider = None
-
-    snapshot = snapshot_stream_context(context)
-
-    assert snapshot.frame_jpeg is None
-    assert snapshot.frame_version == (0, 12)
-    assert snapshot.stream_id == "stream-1"
-    assert snapshot.display_name == "video.mp4"
-    assert snapshot.source_type is SourceType.LOCAL
-    assert snapshot.source_token == stream_source_token(context.source)
-    assert snapshot.state is StreamState.ACTIVE
-    assert snapshot.error == "temporary"
-    assert snapshot.fps == 24.0
-    assert snapshot.inference_latency_ms == 7.5
-    assert snapshot.end_to_end_latency_ms == 12.5
-    assert snapshot.dropped_rate == 0.2
-    assert snapshot.in_count == 3
-    assert snapshot.out_count == 4
-    assert snapshot.occupancy == 5
-    assert snapshot.actual_backend == "pytorch"
-    assert snapshot.actual_device == "cuda"
-    assert snapshot.actual_provider is None
-
-
-def test_snapshot_is_independent_from_context_mutation() -> None:
-    context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
-    frame = np.full((54, 96, 3), (30, 80, 130), dtype=np.uint8)
-    context.latest_rendered_frame = frame
-    context.force_state(StreamState.ACTIVE)
-    context.metrics.processed_frames = 5
-    context.metrics.fps = 18.0
-    context.queue.received = 8
-    context.queue.dropped = 1
-    context.counter = SimpleNamespace(in_count=2, out_count=3, occupancy=4)
-    context.actual_backend = "onnxruntime"
-    context.actual_device = "cpu"
-    context.actual_provider = "CPUExecutionProvider"
-
-    snapshot = snapshot_stream_context(context)
-    frame[:] = 0
-    context.metrics.processed_frames = 99
-    context.metrics.fps = 1.0
-    context.queue.received = 100
-    context.queue.dropped = 100
-    context.counter.in_count = 20
-    context.counter.out_count = 30
-    context.counter.occupancy = 40
-    context.force_state(StreamState.STOPPED)
-    context.actual_backend = "mutated"
-    context.actual_device = "mutated"
-    context.actual_provider = "mutated"
-
-    decoded = cv2.imdecode(
-        np.frombuffer(snapshot.frame_jpeg or b"", dtype=np.uint8),
-        cv2.IMREAD_COLOR,
-    )
-
-    assert snapshot.frame_version == (0, 5)
-    assert snapshot.fps == 18.0
-    assert snapshot.dropped_rate == 0.125
-    assert snapshot.in_count == 2
-    assert snapshot.out_count == 3
-    assert snapshot.occupancy == 4
-    assert snapshot.state is StreamState.ACTIVE
-    assert snapshot.actual_backend == "onnxruntime"
-    assert snapshot.actual_device == "cpu"
-    assert snapshot.actual_provider == "CPUExecutionProvider"
-    assert decoded is not None
-    assert decoded.shape == (UI_CANVAS_HEIGHT, UI_CANVAS_WIDTH, 3)
-    assert float(decoded[..., 2].mean()) > 100.0
-
-
-def test_snapshot_uses_context_lock_for_consistent_state() -> None:
-    context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
-    context.force_state(StreamState.CONNECTING)
-    context.metrics.processed_frames = 1
-    context.counter = SimpleNamespace(in_count=1, out_count=1, occupancy=1)
-    context.latest_rendered_frame = np.full((54, 96, 3), 10, dtype=np.uint8)
-    started = threading.Event()
-    done = threading.Event()
-    holder: dict[str, StreamUISnapshot] = {}
-
-    def worker() -> None:
-        started.set()
-        holder["snapshot"] = snapshot_stream_context(context)
-        done.set()
-
-    with context.lock:
-        thread = threading.Thread(target=worker)
-        thread.start()
-        assert started.wait(1.0)
-        assert not done.wait(0.05)
-        context.force_state(StreamState.ACTIVE)
-        context.metrics.processed_frames = 9
-        context.metrics.fps = 27.0
-        context.metrics.inference_latency_ms = 4.0
-        context.metrics.end_to_end_latency_ms = 6.0
-        context.queue.received = 20
-        context.queue.dropped = 5
-        context.counter.in_count = 7
-        context.counter.out_count = 8
-        context.counter.occupancy = 9
-        context.latest_rendered_frame = np.full((54, 96, 3), 140, dtype=np.uint8)
-        context.actual_backend = "pytorch"
-        context.actual_device = "cuda"
-        context.actual_provider = None
-
-    assert done.wait(1.0)
-    thread.join(timeout=1.0)
-    snapshot = holder["snapshot"]
-    assert snapshot.state is StreamState.ACTIVE
-    assert snapshot.frame_version == (0, 9)
-    assert snapshot.fps == 27.0
-    assert snapshot.inference_latency_ms == 4.0
-    assert snapshot.end_to_end_latency_ms == 6.0
-    assert snapshot.dropped_rate == 0.25
-    assert snapshot.in_count == 7
-    assert snapshot.out_count == 8
-    assert snapshot.occupancy == 9
-    assert snapshot.actual_backend == "pytorch"
-    assert snapshot.actual_device == "cuda"
-
-
-@pytest.mark.parametrize(
-    ("shape", "expected_width", "expected_height"),
-    [
-        ((1920, 1080, 3), 304, UI_CANVAS_HEIGHT),
-        ((400, 400, 3), UI_CANVAS_HEIGHT, UI_CANVAS_HEIGHT),
-    ],
-)
-def test_fit_frame_to_canvas_preserves_content_aspect(
-    shape: tuple[int, int, int],
-    expected_width: int,
-    expected_height: int,
-) -> None:
-    canvas = fit_frame_to_canvas(np.full(shape, 100, dtype=np.uint8))
-
-    x0, y0, x1, y1 = _nonzero_bbox(canvas)
-    actual_width = x1 - x0
-    actual_height = y1 - y0
-    expected_x0 = (UI_CANVAS_WIDTH - expected_width) // 2
-    expected_y0 = (UI_CANVAS_HEIGHT - expected_height) // 2
-
-    assert abs(actual_width - expected_width) <= 1
-    assert abs(actual_height - expected_height) <= 1
-    assert abs(x0 - expected_x0) <= 1
-    assert abs(y0 - expected_y0) <= 1

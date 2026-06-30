@@ -184,6 +184,10 @@ class SharedInferenceScheduler:
             )
             context.latest_frame = packet.frame
             context.latest_rendered_frame = rendered
+            context.latest_rendered_version = (
+                packet.runtime_generation,
+                packet.frame_index,
+            )
             context.latest_detections = detections
             context.actual_backend = result.backend
             context.actual_device = result.device

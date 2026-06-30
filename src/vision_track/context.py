@@ -67,6 +67,7 @@ class StreamContext:
     counter: Any = None
     latest_frame: np.ndarray | None = None
     latest_rendered_frame: np.ndarray | None = None
+    latest_rendered_version: tuple[int, int] | None = None
     latest_detections: Any = None
     actual_backend: str | None = None
     actual_device: str | None = None

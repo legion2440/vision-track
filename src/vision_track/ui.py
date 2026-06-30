@@ -19,15 +19,22 @@ FrameVersion = tuple[int, int]
 
 
 @dataclass(frozen=True)
-class StreamUISnapshot:
+class StreamFrameSnapshot:
+    stream_id: str
+    source_token: str
+    frame_version: FrameVersion | None
+    frame_jpeg: bytes | None
+
+
+@dataclass(frozen=True)
+class StreamMetricsSnapshot:
     stream_id: str
     display_name: str
     source_type: SourceType
     source_token: str
     state: StreamState
     error: str | None
-    frame_version: FrameVersion
-    frame_jpeg: bytes | None
+    processed_frames: int
     fps: float
     inference_latency_ms: float
     end_to_end_latency_ms: float
@@ -126,7 +133,7 @@ def _copy_frame_for_ui(frame: np.ndarray) -> np.ndarray:
 
 def update_stream_frame_cache(
     cache: MutableMapping[str, CachedStreamFrame],
-    snapshot: StreamUISnapshot,
+    snapshot: StreamFrameSnapshot,
 ) -> StreamFrameUpdate:
     cached = cache.get(snapshot.stream_id)
     source_changed = False
@@ -136,6 +143,8 @@ def update_stream_frame_cache(
         source_changed = True
 
     if snapshot.frame_jpeg is not None:
+        if snapshot.frame_version is None:
+            raise RuntimeError("Cannot cache a rendered frame without a published version")
         cache[snapshot.stream_id] = CachedStreamFrame(
             source_token=snapshot.source_token,
             frame_version=snapshot.frame_version,
@@ -168,6 +177,15 @@ def update_stream_frame_cache(
     )
 
 
+def waiting_slot_transition(
+    previous_visible: bool,
+    desired_visible: bool,
+) -> bool | None:
+    if previous_visible == desired_visible:
+        return None
+    return desired_visible
+
+
 def clear_stream_frame_cache(
     cache: MutableMapping[str, CachedStreamFrame],
     stream_id: str,
@@ -184,26 +202,23 @@ def prune_stream_frame_cache(
             cache.pop(stream_id, None)
 
 
-def snapshot_stream_context(
+def snapshot_stream_frame(
     context: StreamContext,
     *,
     cached_frame: CachedStreamFrame | None = None,
-    include_frame: bool = True,
-) -> StreamUISnapshot:
+) -> StreamFrameSnapshot:
     with context.lock:
         source = context.source
-        metrics = context.metrics
-        counter = context.counter
-        queue = context.queue
         source_token = stream_source_token(source)
-        frame_version = (context.runtime_generation, metrics.processed_frames)
+        frame_version = context.latest_rendered_version
         cached_matches = (
             cached_frame is not None
             and cached_frame.source_token == source_token
+            and frame_version is not None
             and cached_frame.frame_version == frame_version
         )
         should_copy_frame = (
-            include_frame
+            frame_version is not None
             and context.latest_rendered_frame is not None
             and not cached_matches
         )
@@ -212,49 +227,52 @@ def snapshot_stream_context(
             if should_copy_frame
             else None
         )
-        received = queue.received
-        dropped = queue.dropped
+        stream_id = context.stream_id
+
+    frame_jpeg = encode_frame_jpeg(frame_copy) if frame_copy is not None else None
+    return StreamFrameSnapshot(
+        stream_id=stream_id,
+        source_token=source_token,
+        frame_version=frame_version,
+        frame_jpeg=frame_jpeg,
+    )
+
+
+def snapshot_stream_metrics(
+    context: StreamContext,
+) -> StreamMetricsSnapshot:
+    with context.lock:
+        source = context.source
+        metrics = context.metrics
+        counter = context.counter
+        received, dropped = context.queue.snapshot_stats()
         dropped_rate = dropped / received if received else 0.0
         in_count = counter.in_count if counter is not None else 0
         out_count = counter.out_count if counter is not None else 0
         occupancy = counter.occupancy if counter is not None else 0
-        stream_id = context.stream_id
-        display_name = source.display_name
-        source_type = source.source_type
-        state = context.state
-        error = context.error
-        fps = metrics.fps
-        inference_latency_ms = metrics.inference_latency_ms
-        end_to_end_latency_ms = metrics.end_to_end_latency_ms
-        actual_backend = context.actual_backend
-        actual_device = context.actual_device
-        actual_provider = context.actual_provider
-
-    frame_jpeg = encode_frame_jpeg(frame_copy) if frame_copy is not None else None
-    return StreamUISnapshot(
-        stream_id=stream_id,
-        display_name=display_name,
-        source_type=source_type,
-        source_token=source_token,
-        state=state,
-        error=error,
-        frame_version=frame_version,
-        frame_jpeg=frame_jpeg,
-        fps=fps,
-        inference_latency_ms=inference_latency_ms,
-        end_to_end_latency_ms=end_to_end_latency_ms,
-        dropped_rate=dropped_rate,
-        in_count=in_count,
-        out_count=out_count,
-        occupancy=occupancy,
-        actual_backend=actual_backend,
-        actual_device=actual_device,
-        actual_provider=actual_provider,
-    )
+        return StreamMetricsSnapshot(
+            stream_id=context.stream_id,
+            display_name=source.display_name,
+            source_type=source.source_type,
+            source_token=stream_source_token(source),
+            state=context.state,
+            error=context.error,
+            processed_frames=metrics.processed_frames,
+            fps=metrics.fps,
+            inference_latency_ms=metrics.inference_latency_ms,
+            end_to_end_latency_ms=metrics.end_to_end_latency_ms,
+            dropped_rate=dropped_rate,
+            in_count=in_count,
+            out_count=out_count,
+            occupancy=occupancy,
+            actual_backend=context.actual_backend,
+            actual_device=context.actual_device,
+            actual_provider=context.actual_provider,
+        )
 
 
 def runtime_backend_summary(
-    context: StreamContext | StreamUISnapshot | None,
+    context: StreamContext | StreamMetricsSnapshot | None,
     *,
     requested_backend: str,
     requested_device: str,

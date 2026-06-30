@@ -68,6 +68,11 @@ class LatestFrameQueue:
                 self.received = 0
                 self.dropped = 0
 
+    def snapshot_stats(self) -> tuple[int, int]:
+        with self._lock:
+            return self.received, self.dropped
+
     @property
     def dropped_rate(self) -> float:
-        return self.dropped / self.received if self.received else 0.0
+        received, dropped = self.snapshot_stats()
+        return dropped / received if received else 0.0
