@@ -176,8 +176,8 @@ def test_required_app_functions_exist() -> None:
     assert "_engine_for_backend" in functions
     assert "render_sidebar_stream_controls" in functions
     assert "render_detail_controls" in functions
-    assert "render_stream_images" in functions
-    assert "render_stream_metrics" in functions
+    assert "render_stream_metrics_card" in functions
+    assert "render_detail_metrics" in functions
 
 
 @pytest.mark.parametrize(
@@ -186,8 +186,8 @@ def test_required_app_functions_exist() -> None:
         ("render_sidebar_stream_controls", "snapshot_stream_controls"),
         ("render_detail_controls", "snapshot_stream_controls"),
         ("_engine_for_backend", "snapshot_for_rebuild"),
-        ("render_stream_images", "snapshot_stream_frame"),
-        ("render_stream_metrics", "snapshot_stream_metrics"),
+        ("render_stream_metrics_card", "snapshot_stream_metrics"),
+        ("render_detail_metrics", "snapshot_stream_metrics"),
     ],
 )
 def test_app_consumers_call_required_snapshot_functions(
@@ -197,6 +197,64 @@ def test_app_consumers_call_required_snapshot_functions(
     functions = _functions_by_name(_app_tree())
 
     assert _contains_call(functions[function_name], required_call)
+
+
+def test_app_has_no_live_frame_streamlit_polling_path() -> None:
+    tree = _app_tree()
+    forbidden_calls = {
+        "snapshot_stream_frame",
+        "update_stream_frame_cache",
+        "image",
+    }
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name):
+                assert node.func.id not in forbidden_calls
+            if isinstance(node.func, ast.Attribute):
+                assert node.func.attr not in forbidden_calls
+
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for decorator in node.decorator_list:
+            if not isinstance(decorator, ast.Call):
+                continue
+            for keyword in decorator.keywords:
+                assert not (
+                    keyword.arg == "run_every"
+                    and isinstance(keyword.value, ast.Constant)
+                    and keyword.value.value == 0.01
+                )
+
+
+def test_app_renders_and_registers_websocket_preview() -> None:
+    tree = _app_tree()
+
+    assert _contains_call(tree, "build_preview_component_html")
+    assert _contains_call(tree, "html")
+    assert _contains_call(tree, "replace_session")
+
+
+@pytest.mark.parametrize(
+    "function_name",
+    ["render_stream_metrics_card", "render_detail_metrics"],
+)
+def test_metrics_fragments_create_only_their_own_elements(function_name: str) -> None:
+    function = _functions_by_name(_app_tree())[function_name]
+    referenced_names = {
+        node.id for node in ast.walk(function) if isinstance(node, ast.Name)
+    }
+
+    assert not referenced_names.intersection(
+        {
+            "stream_placeholders",
+            "image_placeholder",
+            "waiting_placeholder",
+            "detail_metric_placeholders",
+            "detail_runtime_placeholder",
+        }
+    )
+    assert not _contains_call(function, "empty")
 
 
 def test_app_does_not_read_mutable_context_attrs_directly() -> None:

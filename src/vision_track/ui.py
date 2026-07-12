@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
 
 import cv2
@@ -15,17 +14,6 @@ from .tracking import ByteTrackSettings
 UI_CANVAS_WIDTH = 960
 UI_CANVAS_HEIGHT = 540
 UI_JPEG_QUALITY = 85
-
-FrameVersion = tuple[int, int]
-
-
-@dataclass(frozen=True)
-class StreamFrameSnapshot:
-    stream_id: str
-    source_token: str
-    frame_version: FrameVersion | None
-    frame_jpeg: bytes | None
-
 
 @dataclass(frozen=True)
 class StreamMetricsSnapshot:
@@ -76,20 +64,6 @@ class StreamControlSnapshot:
     actual_backend: str | None
     actual_device: str | None
     actual_provider: str | None
-
-
-@dataclass(frozen=True)
-class CachedStreamFrame:
-    source_token: str
-    frame_version: FrameVersion
-    jpeg: bytes
-
-
-@dataclass(frozen=True)
-class StreamFrameUpdate:
-    render_jpeg: bytes | None
-    clear_image: bool
-    show_waiting: bool
 
 
 def stream_source_token(source: VideoSource) -> str:
@@ -200,117 +174,6 @@ def encode_frame_jpeg(frame: np.ndarray) -> bytes:
     if not ok:
         raise RuntimeError("Failed to encode frame as JPEG")
     return encoded.tobytes()
-
-
-def _copy_frame_for_ui(frame: np.ndarray) -> np.ndarray:
-    return np.ascontiguousarray(frame).copy()
-
-
-def update_stream_frame_cache(
-    cache: MutableMapping[str, CachedStreamFrame],
-    snapshot: StreamFrameSnapshot,
-) -> StreamFrameUpdate:
-    cached = cache.get(snapshot.stream_id)
-    source_changed = False
-    if cached is not None and cached.source_token != snapshot.source_token:
-        cache.pop(snapshot.stream_id, None)
-        cached = None
-        source_changed = True
-
-    if snapshot.frame_jpeg is not None:
-        if snapshot.frame_version is None:
-            raise RuntimeError("Cannot cache a rendered frame without a published version")
-        cache[snapshot.stream_id] = CachedStreamFrame(
-            source_token=snapshot.source_token,
-            frame_version=snapshot.frame_version,
-            jpeg=snapshot.frame_jpeg,
-        )
-        return StreamFrameUpdate(
-            render_jpeg=snapshot.frame_jpeg,
-            clear_image=False,
-            show_waiting=False,
-        )
-
-    if cached is not None:
-        return StreamFrameUpdate(
-            render_jpeg=None,
-            clear_image=False,
-            show_waiting=False,
-        )
-
-    if source_changed:
-        return StreamFrameUpdate(
-            render_jpeg=None,
-            clear_image=True,
-            show_waiting=True,
-        )
-
-    return StreamFrameUpdate(
-        render_jpeg=None,
-        clear_image=False,
-        show_waiting=True,
-    )
-
-
-def waiting_slot_transition(
-    previous_visible: bool,
-    desired_visible: bool,
-) -> bool | None:
-    if previous_visible == desired_visible:
-        return None
-    return desired_visible
-
-
-def clear_stream_frame_cache(
-    cache: MutableMapping[str, CachedStreamFrame],
-    stream_id: str,
-) -> None:
-    cache.pop(stream_id, None)
-
-
-def prune_stream_frame_cache(
-    cache: MutableMapping[str, CachedStreamFrame],
-    active_sources: Mapping[str, str],
-) -> None:
-    for stream_id, cached in list(cache.items()):
-        if stream_id not in active_sources or cached.source_token != active_sources[stream_id]:
-            cache.pop(stream_id, None)
-
-
-def snapshot_stream_frame(
-    context: StreamContext,
-    *,
-    cached_frame: CachedStreamFrame | None = None,
-) -> StreamFrameSnapshot:
-    with context.lock:
-        source = context.source
-        source_token = stream_source_token(source)
-        frame_version = context.latest_rendered_version
-        cached_matches = (
-            cached_frame is not None
-            and cached_frame.source_token == source_token
-            and frame_version is not None
-            and cached_frame.frame_version == frame_version
-        )
-        should_copy_frame = (
-            frame_version is not None
-            and context.latest_rendered_frame is not None
-            and not cached_matches
-        )
-        frame_copy = (
-            _copy_frame_for_ui(context.latest_rendered_frame)
-            if should_copy_frame
-            else None
-        )
-        stream_id = context.stream_id
-
-    frame_jpeg = encode_frame_jpeg(frame_copy) if frame_copy is not None else None
-    return StreamFrameSnapshot(
-        stream_id=stream_id,
-        source_token=source_token,
-        frame_version=frame_version,
-        frame_jpeg=frame_jpeg,
-    )
 
 
 def snapshot_stream_metrics(

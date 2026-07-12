@@ -6,6 +6,7 @@ ultralytics==8.4.78
 supervision==0.29.1
 opencv-python==4.13.0.92
 streamlit==1.58.0
+websockets==15.0.1
 onnx==1.22.0
 onnxruntime==1.27.0
 torch-pruning==1.6.1

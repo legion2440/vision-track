@@ -31,6 +31,14 @@ reader N -> latest queue N --/                |
                                                +-> tracker/counter/render N
 ```
 
+Each rendered publication follows a separate preview path:
+
+```text
+rendered frame -> latest-only loopback WebSocket -> binary JPEG -> persistent browser canvas
+```
+
+Streamlit owns layout, controls, settings, metrics, and lifecycle/error text; live frames do not travel through Streamlit image elements or per-frame reruns. Each stream canvas has an independent WebSocket connection and the application retains only the latest encoded JPEG for that session and stream. Preview transport is capped at 15 FPS, but a processed preview cannot update faster than the inference scheduler publishes rendered frames. Detector inference FPS and WebSocket preview FPS are separate measurements.
+
 Tracked identities are represented externally as `(stream_id, tracker_id)`, so the same ByteTrack integer in two streams cannot collide.
 
 ## Repository layout
@@ -45,6 +53,7 @@ src/vision_track/
   context.py             scheduler.py         tracking.py
   counting.py            rendering.py         metrics.py
   engine.py              logging_utils.py     streamlit_state.py
+  preview.py
 scripts/
 notebooks/VisionTrack_Analysis.ipynb
 data/{raw,processed,demo}/
@@ -301,7 +310,11 @@ Sidebar controls:
 
 The main area shows a stream grid and selected-stream detail: rendered frame, source/lifecycle/error state, actual device/backend, FPS, model and end-to-end latency, dropped-frame rate, in/out counts, and occupancy.
 
-The engine is stored in `st.session_state`; repeated Streamlit reruns reuse detector, scheduler, reader, tracker, and counter state.
+Local videos, HTTP URLs, and RTSP URLs remain backend inputs. Browser webcam input is out of scope. Rendered previews use one persistent HTML canvas per stream and a latest-only WebSocket bound to `127.0.0.1`.
+
+The engine and preview session token are stored in `st.session_state`; normal Streamlit reruns reuse detector, scheduler, reader, tracker, counter, and preview bindings. A preview socket reconnect or iframe remount within that session reuses a compatible cached JPEG. A hard browser reload (`Ctrl+R`) resets Streamlit Session State and isn't expected to preserve streams or engine state.
+
+The loopback preview assumes Streamlit and the browser run on the same machine. A remote deployment requires a proxied WebSocket endpoint with TLS (`wss://`) rather than the loopback URL.
 
 ## Artifacts
 
@@ -324,7 +337,7 @@ python -c "import torch, supervision, cv2, streamlit"
 pytest -q
 ```
 
-Tests cover device priority/fallback, annotations, detection filtering/format, frame dropping, independent tracking/counting state, composite IDs, line crossing and re-entry, metrics/schema, lifecycle, credential masking, local video integration, two streams, broken plus working sources, EOF, stop/replay/remove/replace, Streamlit state reuse, ONNX inference, audit imports, and Streamlit startup.
+Tests cover device priority/fallback, annotations, detection filtering/format, frame dropping, independent tracking/counting state, composite IDs, line crossing and re-entry, metrics/schema, lifecycle, credential masking, local video integration, two streams, broken plus working sources, EOF, stop/replay/remove/replace, latest-only WebSocket preview semantics, Streamlit state reuse, ONNX inference, audit imports, and Streamlit startup.
 
 The real pretrained CPU inference test is opt-in because it may download model weights:
 
@@ -351,6 +364,8 @@ Handled failures include missing/corrupt files, unavailable URLs, RTSP disconnec
 ## Limitations
 
 - Browser webcam capture is not required or implemented.
+- Hard browser reload does not preserve streams or engine state; reconnect support is scoped to the same Streamlit session.
+- Preview registry entries from unexpectedly disappeared Streamlit sessions may remain until process shutdown. Patch 1 intentionally has no TTL cleanup.
 - OpenCV wheels are CPU-only; GPU acceleration is detector inference through PyTorch CUDA/MPS or an installed ONNX Runtime provider.
 - RTSP behavior depends on the OpenCV/FFmpeg build and server codec.
 - Supervision 0.29.1 still provides `sv.ByteTrack`, but marks it deprecated for a future release; the exact pin prevents an unreviewed removal.

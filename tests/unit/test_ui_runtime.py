@@ -10,7 +10,6 @@ import pytest
 
 import vision_track.engine as engine_module
 import vision_track.scheduler as scheduler_module
-import vision_track.ui as ui_module
 from vision_track.context import StreamContext, StreamOptions
 from vision_track.counting import ZoneGeometry
 from vision_track.detections import Detections
@@ -21,12 +20,6 @@ from vision_track.queues import FramePacket, LatestFrameQueue
 from vision_track.scheduler import SharedInferenceScheduler
 from vision_track.sources import VideoSource
 from vision_track.tracking import ByteTrackSettings
-from vision_track.ui import (
-    CachedStreamFrame,
-    snapshot_stream_frame,
-    stream_source_token,
-    update_stream_frame_cache,
-)
 
 
 class FakeReader:
@@ -256,60 +249,6 @@ def test_runtime_reset_clears_context_frame_and_version(monkeypatch) -> None:
     assert context.latest_rendered_version is None
     assert context.latest_detections is None
     assert context.render_revision == 22
-
-
-def test_cache_survives_reset_until_first_new_frame(monkeypatch) -> None:
-    context = _context()
-    engine = _minimal_engine(context)
-    context.runtime_generation = 3
-    context.render_revision = 15
-    old_cached = CachedStreamFrame(
-        source_token=stream_source_token(context.source),
-        frame_version=(3, 15),
-        jpeg=b"old-jpeg",
-    )
-    cache = {context.stream_id: old_cached}
-
-    monkeypatch.setattr(engine, "_tracker_settings", lambda: SimpleNamespace())
-    monkeypatch.setattr(engine, "_zone_geometry", lambda: SimpleNamespace())
-    monkeypatch.setattr(
-        engine_module,
-        "StreamTracker",
-        lambda settings: SimpleNamespace(settings=settings, trajectories={}),
-    )
-    monkeypatch.setattr(
-        engine_module,
-        "ZoneCounter",
-        lambda geometry: SimpleNamespace(
-            geometry=geometry,
-            in_count=0,
-            out_count=0,
-            occupancy=0,
-        ),
-    )
-
-    ProcessingEngine._reset_context_runtime(engine, context)
-    reset_snapshot = snapshot_stream_frame(context, cached_frame=old_cached)
-    reset_update = update_stream_frame_cache(cache, reset_snapshot)
-
-    assert cache[context.stream_id] == old_cached
-    assert reset_update.render_jpeg is None
-    assert reset_update.clear_image is False
-    assert reset_update.show_waiting is False
-
-    monkeypatch.setattr(ui_module, "encode_frame_jpeg", lambda frame: b"new-jpeg")
-    context.publish_rendered_frame(
-        np.full((4, 4, 3), 22, dtype=np.uint8),
-        np.full((4, 4, 3), 33, dtype=np.uint8),
-        Detections.empty(),
-    )
-
-    new_snapshot = snapshot_stream_frame(context, cached_frame=cache[context.stream_id])
-    new_update = update_stream_frame_cache(cache, new_snapshot)
-
-    assert new_update.render_jpeg == b"new-jpeg"
-    assert cache[context.stream_id].jpeg == b"new-jpeg"
-    assert cache[context.stream_id].frame_version == (4, 16)
 
 
 def test_queue_snapshot_stats_blocks_on_queue_lock() -> None:

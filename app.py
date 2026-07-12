@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import secrets
 import sys
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 
 ROOT = Path(__file__).resolve().parent
@@ -15,34 +17,28 @@ if str(SRC) not in sys.path:
 from vision_track.configuration import load_config, resolve_project_path
 from vision_track.detector import available_backends
 from vision_track.engine import ProcessingEngine
+from vision_track.preview import build_preview_component_html, get_preview_runtime
 from vision_track.streamlit_state import ENGINE_KEY
 from vision_track.ui import (
-    CachedStreamFrame,
-    StreamFrameUpdate,
     StreamMetricsSnapshot,
-    clear_stream_frame_cache,
-    prune_stream_frame_cache,
     replay_button_label,
     runtime_backend_summary,
     single_stream_column_weights,
     snapshot_stream_controls,
-    snapshot_stream_frame,
     snapshot_stream_identity,
     snapshot_stream_metrics,
     stream_grid_columns,
-    update_stream_frame_cache,
-    waiting_slot_transition,
 )
 
 
 st.set_page_config(page_title="VisionTrack", page_icon="🎯", layout="wide")
 config = load_config()
-FRAME_CACHE_SESSION_KEY = "vision_frame_cache_v1"
-raw_frame_cache = st.session_state.get(FRAME_CACHE_SESSION_KEY)
-if not isinstance(raw_frame_cache, dict):
-    raw_frame_cache = {}
-    st.session_state[FRAME_CACHE_SESSION_KEY] = raw_frame_cache
-frame_cache: dict[str, CachedStreamFrame] = raw_frame_cache
+preview_runtime = get_preview_runtime()
+PREVIEW_SESSION_TOKEN_KEY = "vision_preview_session_token_v1"
+session_token = st.session_state.get(PREVIEW_SESSION_TOKEN_KEY)
+if not isinstance(session_token, str) or not session_token:
+    session_token = secrets.token_urlsafe(24)
+    st.session_state[PREVIEW_SESSION_TOKEN_KEY] = session_token
 
 
 def _engine_for_backend(backend_name: str) -> ProcessingEngine:
@@ -52,7 +48,6 @@ def _engine_for_backend(backend_name: str) -> ProcessingEngine:
         snapshots = []
         if existing is not None:
             snapshots = existing.snapshot_for_rebuild()
-        frame_cache.clear()
         if existing is not None:
             existing.shutdown()
         existing = ProcessingEngine(config, backend_name=backend_name)
@@ -99,6 +94,7 @@ with st.sidebar:
     )
 
     contexts = engine.contexts()
+    preview_runtime.registry.replace_session(session_token, contexts)
     identities = [
         snapshot_stream_identity(context)
         for context in contexts
@@ -126,10 +122,6 @@ with st.sidebar:
         engine.add_stream(remote_url.strip())
         st.rerun()
 
-    active_sources = {
-        identity.stream_id: identity.source_token for identity in identities
-    }
-    prune_stream_frame_cache(frame_cache, active_sources)
     stream_ids = [identity.stream_id for identity in identities]
     selected_id = st.selectbox(
         "Selected stream",
@@ -289,7 +281,7 @@ with st.sidebar:
         key=f"sidebar-remove-{selected_id}",
         use_container_width=True,
     ):
-        clear_stream_frame_cache(frame_cache, selected_id)
+        preview_runtime.registry.remove_stream(session_token, selected_id)
         engine.remove(selected_id)
         st.rerun()
 
@@ -345,15 +337,56 @@ def render_detail_controls(stream_id: str) -> None:
         engine.reset_counters(stream_id)
 
 
+@st.fragment(run_every=0.25)
+def render_stream_metrics_card(stream_id: str) -> None:
+    try:
+        snapshot = snapshot_stream_metrics(engine.get(stream_id))
+    except KeyError:
+        return
+    st.caption(_stream_metrics_caption(snapshot))
+    if snapshot.error:
+        st.error(snapshot.error)
+
+
+@st.fragment(run_every=0.25)
+def render_detail_metrics(
+    stream_id: str,
+    requested_backend: str,
+    requested_device: str,
+) -> None:
+    try:
+        snapshot = snapshot_stream_metrics(engine.get(stream_id))
+    except KeyError:
+        return
+    metric_columns = st.columns(8)
+    metric_columns[0].metric("Status", snapshot.state.value)
+    metric_columns[1].metric("FPS", _metric_value(snapshot.fps))
+    metric_columns[2].metric(
+        "Inference", _metric_value(snapshot.inference_latency_ms, " ms")
+    )
+    metric_columns[3].metric(
+        "End-to-end", _metric_value(snapshot.end_to_end_latency_ms, " ms")
+    )
+    metric_columns[4].metric("Dropped", f"{snapshot.dropped_rate:.1%}")
+    metric_columns[5].metric("In", snapshot.in_count)
+    metric_columns[6].metric("Out", snapshot.out_count)
+    metric_columns[7].metric("Occupancy", snapshot.occupancy)
+    st.caption(
+        runtime_backend_summary(
+            snapshot,
+            requested_backend=requested_backend,
+            requested_device=requested_device,
+        )
+        + f" · source `{snapshot.source_type.value}`"
+    )
+    if snapshot.error:
+        st.error(snapshot.error)
+
+
 dashboard_identities = identities
 dashboard_stream_ids = [identity.stream_id for identity in dashboard_identities]
 dashboard_requested_backend = engine.detector.name
 dashboard_requested_device = engine.device.kind
-stream_placeholders: dict[str, dict[str, object]] = {}
-waiting_visible: dict[str, bool] = {}
-detail_metric_placeholders = []
-detail_runtime_placeholder = None
-detail_stream_id = None
 
 if not dashboard_identities:
     st.info("Add a local video or an HTTP/RTSP source from the sidebar.")
@@ -368,128 +401,24 @@ else:
     for index, identity in enumerate(dashboard_identities):
         with stream_columns[index % len(stream_columns)]:
             st.markdown(f"**{identity.display_name}**")
-            image_placeholder = st.empty()
-            waiting_placeholder = st.empty()
-            cached = frame_cache.get(identity.stream_id)
-            if (
-                cached is not None
-                and cached.source_token == active_sources[identity.stream_id]
-            ):
-                image_placeholder.image(
-                    cached.jpeg,
-                    width="stretch",
-                )
-                waiting_placeholder.empty()
-                waiting_visible[identity.stream_id] = False
-            else:
-                waiting_placeholder.caption("Waiting for frames")
-                waiting_visible[identity.stream_id] = True
-            stream_placeholders[identity.stream_id] = {
-                "image": image_placeholder,
-                "waiting": waiting_placeholder,
-                "metrics": st.empty(),
-                "error": st.empty(),
-            }
+            components.html(
+                build_preview_component_html(
+                    port=preview_runtime.server.port,
+                    session_token=session_token,
+                    stream_id=identity.stream_id,
+                ),
+                height=330,
+                scrolling=False,
+            )
+            render_stream_metrics_card(identity.stream_id)
 
     if selected_id and selected_id in dashboard_stream_ids:
         detail_identity = identity_by_id.get(selected_id)
         if detail_identity is not None:
-            detail_stream_id = selected_id
             st.subheader(f"Details · {detail_identity.display_name}")
-            metric_columns = st.columns(8)
-            detail_metric_placeholders = [column.empty() for column in metric_columns]
-            detail_runtime_placeholder = st.empty()
-            render_detail_controls(detail_stream_id)
-
-@st.fragment(run_every=0.01)
-def render_stream_images() -> None:
-    for stream_id in dashboard_stream_ids:
-        try:
-            context = engine.get(stream_id)
-        except KeyError:
-            continue
-        placeholders = stream_placeholders.get(stream_id)
-        if placeholders is None:
-            continue
-        cached = frame_cache.get(stream_id)
-        snapshot = snapshot_stream_frame(
-            context,
-            cached_frame=cached,
-        )
-        update: StreamFrameUpdate = update_stream_frame_cache(frame_cache, snapshot)
-
-        image_placeholder = placeholders["image"]
-        waiting_placeholder = placeholders["waiting"]
-        if update.clear_image:
-            image_placeholder.empty()
-        if update.render_jpeg is not None:
-            image_placeholder.image(
-                update.render_jpeg,
-                width="stretch",
+            render_detail_metrics(
+                selected_id,
+                dashboard_requested_backend,
+                dashboard_requested_device,
             )
-        transition = waiting_slot_transition(
-            waiting_visible[stream_id],
-            update.show_waiting,
-        )
-        if transition is True:
-            waiting_placeholder.caption("Waiting for frames")
-            waiting_visible[stream_id] = True
-        elif transition is False:
-            waiting_placeholder.empty()
-            waiting_visible[stream_id] = False
-
-
-@st.fragment(run_every=0.25)
-def render_stream_metrics() -> None:
-    snapshots: dict[str, StreamMetricsSnapshot] = {}
-    for stream_id in dashboard_stream_ids:
-        try:
-            context = engine.get(stream_id)
-        except KeyError:
-            continue
-        snapshots[stream_id] = snapshot_stream_metrics(context)
-
-    for stream_id, placeholders in stream_placeholders.items():
-        snapshot = snapshots.get(stream_id)
-        if snapshot is None:
-            continue
-
-        placeholders["metrics"].caption(_stream_metrics_caption(snapshot))
-        if snapshot.error:
-            placeholders["error"].error(snapshot.error)
-        else:
-            placeholders["error"].empty()
-
-    if (
-        detail_stream_id
-        and detail_runtime_placeholder is not None
-        and len(detail_metric_placeholders) == 8
-    ):
-        snapshot = snapshots.get(detail_stream_id)
-        if snapshot is None:
-            return
-        detail_metric_placeholders[0].metric("Status", snapshot.state.value)
-        detail_metric_placeholders[1].metric("FPS", _metric_value(snapshot.fps))
-        detail_metric_placeholders[2].metric(
-            "Inference", _metric_value(snapshot.inference_latency_ms, " ms")
-        )
-        detail_metric_placeholders[3].metric(
-            "End-to-end", _metric_value(snapshot.end_to_end_latency_ms, " ms")
-        )
-        detail_metric_placeholders[4].metric("Dropped", f"{snapshot.dropped_rate:.1%}")
-        detail_metric_placeholders[5].metric("In", snapshot.in_count)
-        detail_metric_placeholders[6].metric("Out", snapshot.out_count)
-        detail_metric_placeholders[7].metric("Occupancy", snapshot.occupancy)
-        detail_runtime_placeholder.caption(
-            runtime_backend_summary(
-                snapshot,
-                requested_backend=dashboard_requested_backend,
-                requested_device=dashboard_requested_device,
-            )
-            + f" · source `{snapshot.source_type.value}`"
-        )
-
-
-if dashboard_stream_ids:
-    render_stream_images()
-    render_stream_metrics()
+            render_detail_controls(selected_id)

@@ -13,27 +13,20 @@ from vision_track.lifecycle import StreamState
 from vision_track.sources import SourceType, VideoSource
 from vision_track.tracking import ByteTrackSettings
 from vision_track.ui import (
-    CachedStreamFrame,
     StreamControlSnapshot,
-    StreamFrameSnapshot,
     StreamMetricsSnapshot,
     UI_CANVAS_HEIGHT,
     UI_CANVAS_WIDTH,
-    clear_stream_frame_cache,
     encode_frame_jpeg,
     fit_frame_to_canvas,
-    prune_stream_frame_cache,
     replay_button_label,
     runtime_backend_summary,
     single_stream_column_weights,
     snapshot_stream_controls,
-    snapshot_stream_frame,
     snapshot_stream_identity,
     snapshot_stream_metrics,
     stream_grid_columns,
     stream_source_token,
-    update_stream_frame_cache,
-    waiting_slot_transition,
 )
 
 
@@ -41,21 +34,6 @@ def _nonzero_bbox(frame: np.ndarray) -> tuple[int, int, int, int]:
     mask = np.any(frame != 0, axis=2)
     ys, xs = np.where(mask)
     return int(xs.min()), int(ys.min()), int(xs.max() + 1), int(ys.max() + 1)
-
-
-def _snapshot_for_cache(
-    *,
-    stream_id: str = "stream-1",
-    source_token: str = "a" * 64,
-    frame_version: tuple[int, int] | None = (0, 1),
-    frame_jpeg: bytes | None = None,
-) -> StreamFrameSnapshot:
-    return StreamFrameSnapshot(
-        stream_id=stream_id,
-        source_token=source_token,
-        frame_version=frame_version,
-        frame_jpeg=frame_jpeg,
-    )
 
 
 def _metrics_snapshot(
@@ -337,195 +315,6 @@ def test_encode_frame_jpeg_returns_decodable_bytes() -> None:
     assert decoded.shape == (UI_CANVAS_HEIGHT, UI_CANVAS_WIDTH, 3)
 
 
-def test_frame_snapshot_uses_published_version() -> None:
-    context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
-    context.latest_rendered_version = (7, 12)
-    context.latest_rendered_frame = np.full((54, 96, 3), 10, dtype=np.uint8)
-    context.metrics.processed_frames = 999
-    context.runtime_generation = 100
-
-    snapshot = snapshot_stream_frame(context, cached_frame=None)
-
-    assert snapshot.frame_version == (7, 12)
-
-
-def test_unchanged_published_frame_skips_copy_and_encode(monkeypatch) -> None:
-    context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
-    context.latest_rendered_version = (3, 11)
-    context.latest_rendered_frame = np.full((54, 96, 3), 10, dtype=np.uint8)
-    cached = CachedStreamFrame(
-        source_token=stream_source_token(context.source),
-        frame_version=(3, 11),
-        jpeg=b"cached",
-    )
-    calls = {"copy": 0, "encode": 0}
-
-    def fake_copy(frame: np.ndarray) -> np.ndarray:
-        calls["copy"] += 1
-        return frame.copy()
-
-    def fake_encode(frame: np.ndarray) -> bytes:
-        calls["encode"] += 1
-        return b"encoded"
-
-    monkeypatch.setattr(ui_module, "_copy_frame_for_ui", fake_copy)
-    monkeypatch.setattr(ui_module, "encode_frame_jpeg", fake_encode)
-
-    snapshot = snapshot_stream_frame(context, cached_frame=cached)
-
-    assert calls == {"copy": 0, "encode": 0}
-    assert snapshot.frame_jpeg is None
-
-
-def test_runtime_generation_change_without_new_published_frame_preserves_cache(
-    monkeypatch,
-) -> None:
-    context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
-    context.runtime_generation = 4
-    context.latest_rendered_version = (4, 20)
-    context.latest_rendered_frame = np.full((54, 96, 3), 10, dtype=np.uint8)
-    cached = CachedStreamFrame(
-        source_token=stream_source_token(context.source),
-        frame_version=(4, 20),
-        jpeg=b"cached",
-    )
-    cache = {"stream-1": cached}
-    calls = {"copy": 0, "encode": 0}
-
-    def fake_copy(frame: np.ndarray) -> np.ndarray:
-        calls["copy"] += 1
-        return frame.copy()
-
-    def fake_encode(frame: np.ndarray) -> bytes:
-        calls["encode"] += 1
-        return b"encoded"
-
-    monkeypatch.setattr(ui_module, "_copy_frame_for_ui", fake_copy)
-    monkeypatch.setattr(ui_module, "encode_frame_jpeg", fake_encode)
-    context.runtime_generation = 5
-
-    snapshot = snapshot_stream_frame(context, cached_frame=cached)
-    update = update_stream_frame_cache(cache, snapshot)
-
-    assert snapshot.frame_version == (4, 20)
-    assert calls == {"copy": 0, "encode": 0}
-    assert cache["stream-1"] == cached
-    assert update.render_jpeg is None
-    assert update.clear_image is False
-    assert update.show_waiting is False
-
-
-def test_new_published_frame_encodes_once(monkeypatch) -> None:
-    context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
-    context.latest_rendered_version = (4, 21)
-    context.latest_rendered_frame = np.full((54, 96, 3), 10, dtype=np.uint8)
-    cached = CachedStreamFrame(
-        source_token=stream_source_token(context.source),
-        frame_version=(4, 20),
-        jpeg=b"cached",
-    )
-    calls = {"copy": 0, "encode": 0}
-
-    def fake_copy(frame: np.ndarray) -> np.ndarray:
-        calls["copy"] += 1
-        return frame.copy()
-
-    def fake_encode(frame: np.ndarray) -> bytes:
-        calls["encode"] += 1
-        return b"encoded"
-
-    monkeypatch.setattr(ui_module, "_copy_frame_for_ui", fake_copy)
-    monkeypatch.setattr(ui_module, "encode_frame_jpeg", fake_encode)
-
-    snapshot = snapshot_stream_frame(context, cached_frame=cached)
-
-    assert calls == {"copy": 1, "encode": 1}
-    assert snapshot.frame_version == (4, 21)
-    assert snapshot.frame_jpeg == b"encoded"
-
-
-def test_reset_counter_republished_version_encodes_once(monkeypatch) -> None:
-    context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
-    context.latest_rendered_version = (4, 22)
-    context.latest_rendered_frame = np.full((54, 96, 3), 10, dtype=np.uint8)
-    cached = CachedStreamFrame(
-        source_token=stream_source_token(context.source),
-        frame_version=(4, 21),
-        jpeg=b"cached",
-    )
-    calls = {"copy": 0, "encode": 0}
-
-    def fake_copy(frame: np.ndarray) -> np.ndarray:
-        calls["copy"] += 1
-        return frame.copy()
-
-    def fake_encode(frame: np.ndarray) -> bytes:
-        calls["encode"] += 1
-        return b"encoded"
-
-    monkeypatch.setattr(ui_module, "_copy_frame_for_ui", fake_copy)
-    monkeypatch.setattr(ui_module, "encode_frame_jpeg", fake_encode)
-
-    snapshot = snapshot_stream_frame(context, cached_frame=cached)
-
-    assert calls == {"copy": 1, "encode": 1}
-    assert snapshot.frame_version == (4, 22)
-    assert snapshot.frame_jpeg == b"encoded"
-
-
-def test_new_generation_with_same_render_revision_encodes_once(monkeypatch) -> None:
-    context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
-    context.latest_rendered_version = (5, 0)
-    context.latest_rendered_frame = np.full((54, 96, 3), 10, dtype=np.uint8)
-    cached = CachedStreamFrame(
-        source_token=stream_source_token(context.source),
-        frame_version=(4, 0),
-        jpeg=b"cached",
-    )
-    calls = {"copy": 0, "encode": 0}
-
-    def fake_copy(frame: np.ndarray) -> np.ndarray:
-        calls["copy"] += 1
-        return frame.copy()
-
-    def fake_encode(frame: np.ndarray) -> bytes:
-        calls["encode"] += 1
-        return b"encoded"
-
-    monkeypatch.setattr(ui_module, "_copy_frame_for_ui", fake_copy)
-    monkeypatch.setattr(ui_module, "encode_frame_jpeg", fake_encode)
-
-    snapshot = snapshot_stream_frame(context, cached_frame=cached)
-
-    assert snapshot.frame_version == (5, 0)
-    assert snapshot.frame_version != cached.frame_version
-    assert calls == {"copy": 1, "encode": 1}
-    assert snapshot.frame_jpeg == b"encoded"
-
-
-def test_no_published_version_skips_copy_and_encode(monkeypatch) -> None:
-    context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
-    context.latest_rendered_version = None
-    context.latest_rendered_frame = np.full((54, 96, 3), 10, dtype=np.uint8)
-    calls = {"copy": 0, "encode": 0}
-
-    def fake_copy(frame: np.ndarray) -> np.ndarray:
-        calls["copy"] += 1
-        return frame.copy()
-
-    def fake_encode(frame: np.ndarray) -> bytes:
-        calls["encode"] += 1
-        return b"encoded"
-
-    monkeypatch.setattr(ui_module, "_copy_frame_for_ui", fake_copy)
-    monkeypatch.setattr(ui_module, "encode_frame_jpeg", fake_encode)
-
-    snapshot = snapshot_stream_frame(context, cached_frame=None)
-
-    assert calls == {"copy": 0, "encode": 0}
-    assert snapshot.frame_jpeg is None
-
-
 def test_metrics_snapshot_does_not_access_frame_encoder(monkeypatch) -> None:
     context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
     context.force_state(StreamState.ACTIVE)
@@ -543,11 +332,6 @@ def test_metrics_snapshot_does_not_access_frame_encoder(monkeypatch) -> None:
     context.latest_rendered_version = (1, 2)
     context.latest_rendered_frame = np.full((54, 96, 3), 10, dtype=np.uint8)
 
-    monkeypatch.setattr(
-        ui_module,
-        "_copy_frame_for_ui",
-        lambda frame: pytest.fail("metrics snapshot copied a frame"),
-    )
     monkeypatch.setattr(
         ui_module,
         "encode_frame_jpeg",
@@ -591,170 +375,6 @@ def test_metrics_snapshot_uses_atomic_queue_stats(monkeypatch) -> None:
     assert snapshot.dropped_rate == pytest.approx(0.3)
 
 
-@pytest.mark.parametrize(
-    ("previous_visible", "desired_visible", "expected"),
-    [
-        (False, False, None),
-        (True, True, None),
-        (False, True, True),
-        (True, False, False),
-    ],
-)
-def test_waiting_slot_transition(
-    previous_visible: bool,
-    desired_visible: bool,
-    expected: bool | None,
-) -> None:
-    assert waiting_slot_transition(previous_visible, desired_visible) is expected
-
-
-@pytest.mark.parametrize("state", [StreamState.STOPPED, StreamState.CONNECTING])
-def test_frame_cache_keeps_image_when_state_changes_without_new_frame(
-    state: StreamState,
-    monkeypatch,
-) -> None:
-    context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
-    context.force_state(state)
-    context.latest_rendered_version = (1, 2)
-    context.latest_rendered_frame = np.full((54, 96, 3), 10, dtype=np.uint8)
-    cached = CachedStreamFrame(
-        source_token=stream_source_token(context.source),
-        frame_version=(1, 2),
-        jpeg=b"cached",
-    )
-    cache = {"stream-1": cached}
-
-    monkeypatch.setattr(
-        ui_module,
-        "encode_frame_jpeg",
-        lambda frame: pytest.fail("state-only change encoded a frame"),
-    )
-
-    snapshot = snapshot_stream_frame(context, cached_frame=cached)
-    update = update_stream_frame_cache(cache, snapshot)
-
-    assert cache["stream-1"].jpeg == b"cached"
-    assert update.render_jpeg is None
-    assert update.clear_image is False
-    assert update.show_waiting is False
-
-
-def test_frame_cache_keeps_image_after_reset_without_frame() -> None:
-    context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
-    cached = CachedStreamFrame(
-        source_token=stream_source_token(context.source),
-        frame_version=(1, 2),
-        jpeg=b"cached",
-    )
-    cache = {"stream-1": cached}
-
-    snapshot = snapshot_stream_frame(context, cached_frame=cached)
-    update = update_stream_frame_cache(cache, snapshot)
-
-    assert cache["stream-1"] == cached
-    assert update.render_jpeg is None
-    assert update.clear_image is False
-    assert update.show_waiting is False
-
-
-def test_frame_cache_survives_simulated_full_rerun() -> None:
-    cache: dict[str, CachedStreamFrame] = {}
-    first = _snapshot_for_cache(frame_version=(1, 2), frame_jpeg=b"first")
-
-    first_update = update_stream_frame_cache(cache, first)
-    second_update = update_stream_frame_cache(
-        cache,
-        _snapshot_for_cache(frame_version=(1, 2), frame_jpeg=None),
-    )
-
-    assert first_update.render_jpeg == b"first"
-    assert cache["stream-1"].jpeg == b"first"
-    assert second_update.render_jpeg is None
-    assert second_update.clear_image is False
-    assert second_update.show_waiting is False
-
-
-def test_frame_cache_clears_stale_image_for_source_replacement_without_frame() -> None:
-    cache = {
-        "stream-1": CachedStreamFrame(
-            source_token="a" * 64,
-            frame_version=(1, 2),
-            jpeg=b"cached",
-        )
-    }
-
-    update = update_stream_frame_cache(
-        cache,
-        _snapshot_for_cache(source_token="b" * 64, frame_jpeg=None),
-    )
-
-    assert "stream-1" not in cache
-    assert update.render_jpeg is None
-    assert update.clear_image is True
-    assert update.show_waiting is True
-
-
-def test_frame_cache_replaces_stale_image_when_new_source_frame_is_ready() -> None:
-    cache = {
-        "stream-1": CachedStreamFrame(
-            source_token="a" * 64,
-            frame_version=(1, 2),
-            jpeg=b"cached",
-        )
-    }
-
-    update = update_stream_frame_cache(
-        cache,
-        _snapshot_for_cache(source_token="b" * 64, frame_version=(2, 1), frame_jpeg=b"new"),
-    )
-
-    assert cache["stream-1"].source_token == "b" * 64
-    assert cache["stream-1"].frame_version == (2, 1)
-    assert cache["stream-1"].jpeg == b"new"
-    assert update.render_jpeg == b"new"
-    assert update.clear_image is False
-    assert update.show_waiting is False
-
-
-def test_frame_cache_rejects_versionless_frame_update() -> None:
-    cache: dict[str, CachedStreamFrame] = {}
-
-    with pytest.raises(RuntimeError):
-        update_stream_frame_cache(
-            cache,
-            _snapshot_for_cache(frame_version=None, frame_jpeg=b"invalid"),
-        )
-
-
-def test_clear_stream_frame_cache_removes_existing_and_ignores_missing() -> None:
-    cache = {
-        "stream-1": CachedStreamFrame(
-            source_token="a" * 64,
-            frame_version=(1, 2),
-            jpeg=b"cached",
-        )
-    }
-
-    clear_stream_frame_cache(cache, "stream-1")
-    clear_stream_frame_cache(cache, "missing")
-
-    assert cache == {}
-
-
-def test_prune_stream_frame_cache_keeps_only_active_matching_sources() -> None:
-    cache = {
-        "matching": CachedStreamFrame("a" * 64, (1, 1), b"matching"),
-        "mismatch": CachedStreamFrame("b" * 64, (1, 1), b"mismatch"),
-        "removed": CachedStreamFrame("c" * 64, (1, 1), b"removed"),
-    }
-
-    prune_stream_frame_cache(cache, {"matching": "a" * 64, "mismatch": "x" * 64})
-
-    assert cache == {
-        "matching": CachedStreamFrame("a" * 64, (1, 1), b"matching")
-    }
-
-
 def test_stream_source_token_is_stable_hashed_source_identity() -> None:
     local = VideoSource.from_uri("video.mp4")
     same_local = VideoSource.from_uri("video.mp4")
@@ -775,15 +395,3 @@ def test_stream_source_token_is_stable_hashed_source_identity() -> None:
     assert len(token) == 64
     assert token == token.lower()
     assert all(item in "0123456789abcdef" for item in token)
-
-
-def test_cached_jpeg_bytes_are_independent_from_source_frame_mutation() -> None:
-    frame = np.full((54, 96, 3), 90, dtype=np.uint8)
-    payload = encode_frame_jpeg(frame)
-    cache: dict[str, CachedStreamFrame] = {}
-
-    update_stream_frame_cache(cache, _snapshot_for_cache(frame_jpeg=payload))
-    frame[:] = 0
-
-    assert isinstance(cache["stream-1"].jpeg, bytes)
-    assert cache["stream-1"].jpeg == payload
