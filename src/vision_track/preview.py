@@ -111,8 +111,6 @@ class PreviewRegistry:
     def remove_session(self, session_token: str) -> None:
         with self._lock:
             removed = set(self._bindings.pop(session_token, {}))
-            for key in [key for key in self._revisions if key[0] == session_token]:
-                self._revisions.pop(key, None)
         self._invalidate_many(session_token, removed)
 
     def _invalidate_many(self, session_token: str, stream_ids: set[str]) -> None:
@@ -790,8 +788,17 @@ canvas {{ display: block; width: 100%; height: 100%; background: #000; }}
         if (socket) socket.close(1000, "removed");
       }}
     }};
-    socket.onclose = () => {{
+    socket.onclose = (event) => {{
       socket = null;
+      if (event.code === 1008) {{
+        reconnectEnabled = false;
+        if (reconnectTimer !== null) {{
+          window.clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }}
+        setStatus("Preview unavailable");
+        return;
+      }}
       scheduleReconnect();
     }};
     socket.onerror = () => {{

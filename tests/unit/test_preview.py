@@ -105,6 +105,47 @@ def test_registry_invalidates_cache_path_for_replace_remove_and_session_remove()
     assert invalidated.count(("session", "second")) >= 2
 
 
+def test_remove_session_preserves_revision_tombstone_and_invalidates_cache() -> None:
+    cache = PreviewJpegCache()
+    registry = PreviewRegistry(invalidate_stream=cache.invalidate_stream)
+    first_context = _context("stream-1", "first.mp4")
+    registry.replace_session("session", [first_context])
+    first_binding = registry.resolve("session", "stream-1")
+    assert first_binding is not None
+
+    cached = cache.get_or_encode(
+        "session",
+        _snapshot(binding_revision=first_binding.binding_revision),
+        is_current=lambda: True,
+        encoder=lambda _frame: b"old-jpeg",
+    )
+    assert cached is not None
+    assert cache.record_count() == 1
+    assert cache.encode_lock_count() == 1
+
+    registry.remove_session("session")
+
+    assert registry.resolve("session", "stream-1") is None
+    assert cache.record_count() == 0
+    assert cache.encode_lock_count() == 0
+
+    second_context = _context("stream-1", "second.mp4")
+    registry.replace_session("session", [second_context])
+    second_binding = registry.resolve("session", "stream-1")
+    assert second_binding is not None
+    assert second_binding.binding_revision > first_binding.binding_revision
+    assert (
+        cache.get_compatible(
+            "session",
+            "stream-1",
+            binding_revision=second_binding.binding_revision,
+            source_token="source-a",
+            current_frame_version=None,
+        )
+        is None
+    )
+
+
 def test_snapshot_captures_values_under_context_lock(monkeypatch) -> None:
     context = _context("stream-1")
     entered = False
@@ -398,3 +439,30 @@ def test_preview_html_encodes_path_and_guards_reconnect_and_decode_order() -> No
     assert "bitmap.close()" in html
     assert "canvas.dataset.frameCount" in html
     assert "canvas.dataset.hasFrame" in html
+
+
+def test_preview_html_policy_violation_disables_reconnect_and_hides_details() -> None:
+    html = build_preview_component_html(
+        port=4321,
+        session_token="secret-session",
+        stream_id="secret-stream",
+    )
+    handler_start = html.index("socket.onclose = (event) => {")
+    handler_end = html.index("socket.onerror", handler_start)
+    handler = html[handler_start:handler_end]
+    policy_branch = """if (event.code === 1008) {
+        reconnectEnabled = false;
+        if (reconnectTimer !== null) {
+          window.clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+        setStatus("Preview unavailable");
+        return;
+      }"""
+
+    assert policy_branch in handler
+    assert handler.index("return;") < handler.index("scheduleReconnect();")
+    assert handler.count("scheduleReconnect();") == 1
+    assert "event.reason" not in handler
+    assert "secret-session" not in handler
+    assert "secret-stream" not in handler
