@@ -68,7 +68,7 @@ tests/{unit,integration}/
 - Windows 11 with Git Bash.
 - macOS on Apple Silicon with MPS fallback logic.
 - Linux with CUDA or CPU.
-- Python is intentionally fixed to `3.11.*`.
+- Python is intentionally fixed to `3.13.*`.
 
 All commands below are run from the repository root. On Windows Git Bash:
 
@@ -80,7 +80,7 @@ cd /d/TSchool/vision-track
 
 ### Windows 11
 
-Install 64-bit Python 3.11, then in Git Bash:
+Install 64-bit Python 3.13, then in Git Bash:
 
 ```bash
 python -m venv .venv
@@ -98,7 +98,7 @@ python -m pip install -r requirements-cuda.txt
 ### macOS Apple Silicon
 
 ```bash
-python3.11 -m venv .venv
+python3.13 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements-mps.txt
@@ -110,7 +110,7 @@ The normal macOS PyTorch wheel includes MPS support. Unsupported operations may 
 ### Linux
 
 ```bash
-python3.11 -m venv .venv
+python3.13 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
@@ -380,7 +380,7 @@ Handled failures include missing/corrupt files, unavailable cameras or URLs, web
 
 ## Troubleshooting
 
-- `python --version` must report Python 3.11.x.
+- `python --version` must report Python 3.13.x.
 - If `torch.cuda.is_available()` is false, verify the NVIDIA driver and reinstall the PyTorch build selected for the machine.
 - If MPS is unavailable, verify Apple Silicon, supported macOS, and an MPS-enabled PyTorch wheel.
 - If RTSP fails, test the URL and codec with another client; credentials will be masked in logs.

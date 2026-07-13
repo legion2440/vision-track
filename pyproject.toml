@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "vision-track"
 version = "0.1.0"
 description = "Multi-stream person detection, tracking, and counting"
-requires-python = "==3.11.*"
+requires-python = "==3.13.*"
 dynamic = ["dependencies"]
 
 [tool.setuptools.dynamic]
