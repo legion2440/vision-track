@@ -81,6 +81,60 @@ def test_trackers_have_independent_state(monkeypatch) -> None:
     assert first.trajectories is not second.trajectories
 
 
+def _tracked_detection(tracker_id: int = 7) -> Detections:
+    return Detections([[10, 10, 30, 40]], [0.9], [0], [tracker_id])
+
+
+def test_trajectory_survives_within_lost_track_buffer(monkeypatch) -> None:
+    install_fake_supervision(monkeypatch)
+    tracker = StreamTracker(ByteTrackSettings(lost_track_buffer=3))
+
+    tracker.update(_tracked_detection())
+    for _ in range(3):
+        tracker.update(Detections.empty())
+
+    assert 7 in tracker.trajectories
+    assert tracker._trajectory_last_seen[7] == 1
+
+
+def test_trajectory_is_removed_after_lost_track_buffer(monkeypatch) -> None:
+    install_fake_supervision(monkeypatch)
+    tracker = StreamTracker(ByteTrackSettings(lost_track_buffer=2))
+
+    tracker.update(_tracked_detection())
+    tracker.update(Detections.empty())
+    tracker.update(Detections.empty())
+    assert 7 in tracker.trajectories
+
+    tracker.update(Detections.empty())
+
+    assert 7 not in tracker.trajectories
+    assert 7 not in tracker._trajectory_last_seen
+
+
+def test_empty_detections_expire_stale_trajectory(monkeypatch) -> None:
+    install_fake_supervision(monkeypatch)
+    tracker = StreamTracker(ByteTrackSettings(lost_track_buffer=0))
+
+    tracker.update(_tracked_detection())
+    tracker.update(Detections.empty())
+
+    assert tracker.trajectories == {}
+    assert tracker._trajectory_last_seen == {}
+
+
+def test_tracker_reset_clears_all_trajectory_state(monkeypatch) -> None:
+    install_fake_supervision(monkeypatch)
+    tracker = StreamTracker(ByteTrackSettings(lost_track_buffer=3))
+    tracker.update(_tracked_detection())
+
+    tracker.reset()
+
+    assert tracker.trajectories == {}
+    assert tracker._trajectory_last_seen == {}
+    assert tracker._trajectory_frame == 0
+
+
 def test_counters_are_independent() -> None:
     first = ZoneCounter(ZoneGeometry())
     second = ZoneCounter(ZoneGeometry())

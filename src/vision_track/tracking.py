@@ -23,6 +23,8 @@ class StreamTracker:
         self.settings = settings
         self._tracker = self._create_tracker()
         self.trajectories: dict[int, deque[tuple[int, int]]] = {}
+        self._trajectory_frame = 0
+        self._trajectory_last_seen: dict[int, int] = {}
 
     def _create_tracker(self):
         import supervision as sv
@@ -42,21 +44,37 @@ class StreamTracker:
         return result
 
     def _update_trajectories(self, detections: Detections) -> None:
-        if detections.tracker_id is None:
-            return
-        active_ids: set[int] = set()
-        for box, tracker_id in zip(detections.xyxy, detections.tracker_id):
-            tracker_id = int(tracker_id)
-            active_ids.add(tracker_id)
-            center = (int((box[0] + box[2]) / 2), int(box[3]))
-            trajectory = self.trajectories.setdefault(
-                tracker_id, deque(maxlen=self.settings.trajectory_length)
-            )
-            trajectory.append(center)
+        self._trajectory_frame += 1
+        if detections.tracker_id is not None:
+            for box, tracker_id in zip(detections.xyxy, detections.tracker_id):
+                tracker_id = int(tracker_id)
+                self._trajectory_last_seen[tracker_id] = self._trajectory_frame
+                center = (int((box[0] + box[2]) / 2), int(box[3]))
+                trajectory = self.trajectories.setdefault(
+                    tracker_id,
+                    deque(maxlen=self.settings.trajectory_length),
+                )
+                trajectory.append(center)
+
+        expired_ids = {
+            tracker_id
+            for tracker_id, last_seen in self._trajectory_last_seen.items()
+            if self._trajectory_frame - last_seen > self.settings.lost_track_buffer
+        }
+        self._remove_trajectories(expired_ids)
+
         if len(self.trajectories) > 1000:
-            self.trajectories = {
-                key: value for key, value in self.trajectories.items() if key in active_ids
-            }
+            newest_ids = sorted(
+                self._trajectory_last_seen,
+                key=self._trajectory_last_seen.__getitem__,
+                reverse=True,
+            )[:1000]
+            self._remove_trajectories(set(self.trajectories) - set(newest_ids))
+
+    def _remove_trajectories(self, tracker_ids: set[int]) -> None:
+        for tracker_id in tracker_ids:
+            self.trajectories.pop(tracker_id, None)
+            self._trajectory_last_seen.pop(tracker_id, None)
 
     def reset(self) -> None:
         if hasattr(self._tracker, "reset"):
@@ -64,10 +82,11 @@ class StreamTracker:
         else:
             self._tracker = self._create_tracker()
         self.trajectories.clear()
+        self._trajectory_last_seen.clear()
+        self._trajectory_frame = 0
 
 
 def independent_trackers(
     settings: ByteTrackSettings,
 ) -> tuple[StreamTracker, StreamTracker]:
     return StreamTracker(settings), StreamTracker(settings)
-

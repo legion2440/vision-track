@@ -220,19 +220,39 @@ class SharedInferenceScheduler:
             in_count = context.counter.in_count if context.counter else 0
             out_count = context.counter.out_count if context.counter else 0
             occupancy = context.counter.occupancy if context.counter else 0
-            trajectories = context.tracker.trajectories if context.tracker else {}
-            rendered = render_frame(
-                packet.frame,
-                detections,
-                trajectories=trajectories,
-                geometry=context.counter.geometry if context.counter else None,
-                in_count=in_count,
-                out_count=out_count,
-                occupancy=occupancy,
-                show_detections=context.options.detection_enabled,
-                show_tracking=context.options.tracking_enabled,
-                show_counting=context.options.counting_enabled,
+            trajectories = (
+                {
+                    tracker_id: tuple(points)
+                    for tracker_id, points in context.tracker.trajectories.items()
+                }
+                if context.tracker
+                else {}
             )
+            geometry = context.counter.geometry if context.counter else None
+            show_detections = context.options.detection_enabled
+            show_tracking = context.options.tracking_enabled
+            show_counting = context.options.counting_enabled
+            render_state_revision = context.render_state_revision
+
+        rendered = render_frame(
+            packet.frame,
+            detections,
+            trajectories=trajectories,
+            geometry=geometry,
+            in_count=in_count,
+            out_count=out_count,
+            occupancy=occupancy,
+            show_detections=show_detections,
+            show_tracking=show_tracking,
+            show_counting=show_counting,
+        )
+
+        with context.lock:
+            if (
+                packet.runtime_generation != context.runtime_generation
+                or render_state_revision != context.render_state_revision
+            ):
+                return False
             context.publish_rendered_frame(
                 packet.frame,
                 rendered,

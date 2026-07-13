@@ -74,6 +74,7 @@ class StreamContext:
     actual_provider: str | None = None
     runtime_generation: int = 0
     render_revision: int = 0
+    render_state_revision: int = 0
     trajectories: dict[int, list[tuple[int, int]]] = field(default_factory=dict)
     metrics: StreamMetrics = field(default_factory=StreamMetrics)
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False)

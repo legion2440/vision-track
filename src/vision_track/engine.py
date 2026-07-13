@@ -357,6 +357,7 @@ class ProcessingEngine:
         with context.lock:
             if context.counter is None:
                 return
+            context.render_state_revision += 1
             context.counter.reset()
             self._rerender_latest_locked(context)
 
@@ -389,7 +390,11 @@ class ProcessingEngine:
     def update_options(self, stream_id: str, **changes) -> None:
         context = self.get(stream_id)
         with context.lock:
-            context.options = replace(context.options, **changes)
+            updated_options = replace(context.options, **changes)
+            if updated_options == context.options:
+                return
+            context.options = updated_options
+            context.render_state_revision += 1
 
     def update_tracker(self, stream_id: str, **changes) -> None:
         context = self.get(stream_id)
@@ -397,6 +402,7 @@ class ProcessingEngine:
             settings = replace(context.tracker.settings, **changes)
             context.tracker = StreamTracker(settings)
             context.counter.reset_tracking_state()
+            context.render_state_revision += 1
 
     def start_all(self) -> None:
         for context in self.contexts():

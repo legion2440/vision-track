@@ -20,6 +20,7 @@ from vision_track.queues import FramePacket, LatestFrameQueue
 from vision_track.scheduler import SharedInferenceScheduler
 from vision_track.sources import VideoSource
 from vision_track.tracking import ByteTrackSettings
+from vision_track.ui import snapshot_stream_metrics
 
 
 class FakeReader:
@@ -33,6 +34,7 @@ class FakeReader:
 class FakeCounter:
     def __init__(self) -> None:
         self.reset_calls = 0
+        self.reset_tracking_state_calls = 0
         self.geometry = ZoneGeometry()
         self.in_count = 4
         self.out_count = 5
@@ -43,6 +45,9 @@ class FakeCounter:
         self.in_count = 0
         self.out_count = 0
         self.occupancy = 0
+
+    def reset_tracking_state(self) -> None:
+        self.reset_tracking_state_calls += 1
 
 
 def _context(stream_id: str = "stream-1") -> StreamContext:
@@ -164,6 +169,232 @@ def test_stale_packet_does_not_publish_version(monkeypatch) -> None:
     assert context.latest_rendered_version == (9, 4)
     assert context.render_revision == 4
     assert context.metrics.processed_frames == 3
+
+
+def test_blocked_render_does_not_block_metrics_or_stop(monkeypatch) -> None:
+    context = _context()
+    context.force_state(StreamState.ACTIVE)
+    context.runtime_generation = 4
+    context.options = StreamOptions(
+        detection_enabled=False,
+        tracking_enabled=False,
+        counting_enabled=False,
+    )
+    context.reader = FakeReader()
+    engine = _minimal_engine(context)
+    scheduler = _scheduler(context)
+    packet = _packet(runtime_generation=4)
+    render_started = threading.Event()
+    release_render = threading.Event()
+    metrics_finished = threading.Event()
+    stop_finished = threading.Event()
+    finalize_result: list[bool] = []
+
+    def blocked_render(*_args, **_kwargs):
+        render_started.set()
+        release_render.wait(timeout=2.0)
+        return np.full((4, 4, 3), 99, dtype=np.uint8)
+
+    monkeypatch.setattr(scheduler_module, "render_frame", blocked_render)
+    finalize_thread = threading.Thread(
+        target=lambda: finalize_result.append(
+            scheduler._finalize(context, packet, _result())
+        ),
+        daemon=True,
+    )
+    metrics_thread = threading.Thread(
+        target=lambda: (snapshot_stream_metrics(context), metrics_finished.set()),
+        daemon=True,
+    )
+    stop_thread = threading.Thread(
+        target=lambda: (engine.stop(context.stream_id), stop_finished.set()),
+        daemon=True,
+    )
+
+    try:
+        finalize_thread.start()
+        assert render_started.wait(timeout=1.0)
+        metrics_thread.start()
+        stop_thread.start()
+        assert metrics_finished.wait(timeout=0.5)
+        assert stop_finished.wait(timeout=0.5)
+    finally:
+        release_render.set()
+        finalize_thread.join(timeout=1.0)
+        metrics_thread.join(timeout=1.0)
+        stop_thread.join(timeout=1.0)
+
+    assert finalize_result == [False]
+    assert context.latest_rendered_frame is None
+    assert context.metrics.processed_frames == 0
+
+
+def test_render_result_is_discarded_after_generation_change(monkeypatch) -> None:
+    context = _context()
+    context.runtime_generation = 5
+    context.options = StreamOptions(
+        detection_enabled=False,
+        tracking_enabled=False,
+        counting_enabled=False,
+    )
+    scheduler = _scheduler(context)
+    packet = _packet(runtime_generation=5)
+    render_started = threading.Event()
+    release_render = threading.Event()
+    generation_changed = threading.Event()
+    finalize_result: list[bool] = []
+
+    def blocked_render(*_args, **_kwargs):
+        render_started.set()
+        release_render.wait(timeout=2.0)
+        return np.full((4, 4, 3), 99, dtype=np.uint8)
+
+    def change_generation() -> None:
+        with context.lock:
+            context.runtime_generation += 1
+        generation_changed.set()
+
+    monkeypatch.setattr(scheduler_module, "render_frame", blocked_render)
+    finalize_thread = threading.Thread(
+        target=lambda: finalize_result.append(
+            scheduler._finalize(context, packet, _result())
+        ),
+        daemon=True,
+    )
+    generation_thread = threading.Thread(target=change_generation, daemon=True)
+
+    try:
+        finalize_thread.start()
+        assert render_started.wait(timeout=1.0)
+        generation_thread.start()
+        assert generation_changed.wait(timeout=0.5)
+    finally:
+        release_render.set()
+        finalize_thread.join(timeout=1.0)
+        generation_thread.join(timeout=1.0)
+
+    assert finalize_result == [False]
+    assert context.latest_rendered_frame is None
+    assert context.latest_rendered_version is None
+    assert context.metrics.processed_frames == 0
+
+
+def test_counter_reset_invalidates_in_flight_render(monkeypatch) -> None:
+    context = _context()
+    context.runtime_generation = 6
+    context.options = StreamOptions(
+        detection_enabled=False,
+        tracking_enabled=False,
+        counting_enabled=False,
+    )
+    context.counter = FakeCounter()
+    engine = _minimal_engine(context)
+    scheduler = _scheduler(context)
+    packet = _packet(runtime_generation=6)
+    render_started = threading.Event()
+    release_render = threading.Event()
+    reset_finished = threading.Event()
+    finalize_result: list[bool] = []
+
+    def blocked_render(*_args, **_kwargs):
+        render_started.set()
+        release_render.wait(timeout=2.0)
+        return np.full((4, 4, 3), 99, dtype=np.uint8)
+
+    monkeypatch.setattr(scheduler_module, "render_frame", blocked_render)
+    finalize_thread = threading.Thread(
+        target=lambda: finalize_result.append(
+            scheduler._finalize(context, packet, _result())
+        ),
+        daemon=True,
+    )
+    reset_thread = threading.Thread(
+        target=lambda: (engine.reset_counters(context.stream_id), reset_finished.set()),
+        daemon=True,
+    )
+
+    try:
+        finalize_thread.start()
+        assert render_started.wait(timeout=1.0)
+        reset_thread.start()
+        assert reset_finished.wait(timeout=0.5)
+    finally:
+        release_render.set()
+        finalize_thread.join(timeout=1.0)
+        reset_thread.join(timeout=1.0)
+
+    assert context.render_state_revision == 1
+    assert finalize_result == [False]
+    assert context.latest_rendered_frame is None
+    assert context.metrics.processed_frames == 0
+
+
+@pytest.mark.parametrize("state_change", ["options", "tracker"])
+def test_render_state_change_invalidates_in_flight_render(
+    monkeypatch,
+    state_change: str,
+) -> None:
+    context = _context()
+    context.runtime_generation = 7
+    context.options = StreamOptions(
+        detection_enabled=False,
+        tracking_enabled=False,
+        counting_enabled=False,
+    )
+    context.tracker = SimpleNamespace(
+        settings=ByteTrackSettings(),
+        trajectories={1: [(1, 2), (2, 3)]},
+    )
+    context.counter = FakeCounter()
+    engine = _minimal_engine(context)
+    scheduler = _scheduler(context)
+    packet = _packet(runtime_generation=7)
+    render_started = threading.Event()
+    release_render = threading.Event()
+    state_changed = threading.Event()
+    finalize_result: list[bool] = []
+
+    def blocked_render(*_args, **_kwargs):
+        render_started.set()
+        release_render.wait(timeout=2.0)
+        return np.full((4, 4, 3), 99, dtype=np.uint8)
+
+    def change_state() -> None:
+        if state_change == "options":
+            engine.update_options(context.stream_id, detection_enabled=True)
+        else:
+            engine.update_tracker(context.stream_id, lost_track_buffer=45)
+        state_changed.set()
+
+    monkeypatch.setattr(scheduler_module, "render_frame", blocked_render)
+    monkeypatch.setattr(
+        engine_module,
+        "StreamTracker",
+        lambda settings: SimpleNamespace(settings=settings, trajectories={}),
+    )
+    finalize_thread = threading.Thread(
+        target=lambda: finalize_result.append(
+            scheduler._finalize(context, packet, _result())
+        ),
+        daemon=True,
+    )
+    state_thread = threading.Thread(target=change_state, daemon=True)
+
+    try:
+        finalize_thread.start()
+        assert render_started.wait(timeout=1.0)
+        state_thread.start()
+        assert state_changed.wait(timeout=0.5)
+    finally:
+        release_render.set()
+        finalize_thread.join(timeout=1.0)
+        state_thread.join(timeout=1.0)
+
+    assert context.render_state_revision == 1
+    assert finalize_result == [False]
+    assert context.latest_rendered_frame is None
+    assert context.latest_rendered_version is None
+    assert context.metrics.processed_frames == 0
 
 
 def test_engine_stop_preserves_published_frame_identity() -> None:
