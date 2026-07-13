@@ -169,6 +169,20 @@ python scripts/validate_dataset.py
 
 The validator checks corrupt images, image/label pairing, missing and empty annotations, unknown classes, five-field YOLO syntax, normalized coordinate ranges, non-positive boxes, duplicates, and tiny objects. The report is written to `reports/dataset_validation.json`.
 
+Run the read-only raw/prepared audit before training:
+
+```bash
+python scripts/audit_dataset.py
+```
+
+The audit writes JSON and Markdown reports, split-level person density,
+resolution and relative box distributions, proof of the current empty-image
+filter, cross-split SHA-256 and perceptual-hash leakage, and deterministic
+annotation contact sheets. It reports missing raw/prepared inputs explicitly
+instead of fabricating statistics. Domain collection follows
+[`docs/annotation_policy.md`](docs/annotation_policy.md) and the grouped split
+protocol in [`docs/dataset_split_protocol.md`](docs/dataset_split_protocol.md).
+
 ## Analysis notebook
 
 Start Jupyter and open `notebooks/VisionTrack_Analysis.ipynb`:

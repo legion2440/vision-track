@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vision-track.local/schemas/domain-manifest-record-v1.json",
+  "title": "VisionTrack domain dataset manifest record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "sample_id",
+    "image_path",
+    "source_id",
+    "source_type",
+    "scene_id",
+    "time_block_id",
+    "group_id",
+    "split",
+    "role",
+    "annotation_status",
+    "distractors"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "sample_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "image_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "label_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable camera, video, or acquisition source identifier"
+    },
+    "source_type": {
+      "enum": ["webcam", "rtsp", "http", "local_video", "still_image"]
+    },
+    "scene_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "time_block_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Contiguous capture block; adjacent frames share this value"
+    },
+    "group_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Atomic split key, normally source_id/scene_id/time_block_id"
+    },
+    "captured_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "frame_index": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "split": {
+      "enum": ["unassigned", "train", "val", "test"]
+    },
+    "role": {
+      "enum": ["positive", "mixed", "hard_negative"]
+    },
+    "annotation_status": {
+      "enum": ["pending", "verified", "rejected"]
+    },
+    "distractors": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "empty_scene",
+          "body_part",
+          "screen_person",
+          "poster_or_photo_person",
+          "reflection",
+          "furniture_or_clothing",
+          "other"
+        ]
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "location": {
+          "enum": ["indoor", "outdoor", "mixed", "unknown"]
+        },
+        "lighting": {
+          "enum": ["daylight", "artificial", "low_light", "backlit", "mixed", "unknown"]
+        },
+        "crowd_level": {
+          "enum": ["empty", "single", "small_group", "crowd", "unknown"]
+        }
+      }
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "phash64": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$"
+    },
+    "license_or_consent": {
+      "type": "string",
+      "minLength": 1
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "role": {
+            "enum": ["positive", "mixed"]
+          }
+        },
+        "required": ["role"]
+      },
+      "then": {
+        "required": ["label_path"]
+      }
+    }
+  ]
+}
