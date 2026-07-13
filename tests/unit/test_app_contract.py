@@ -270,11 +270,40 @@ def test_app_renders_and_registers_websocket_preview() -> None:
 
 def test_app_exposes_manual_server_webcam_discovery_and_add() -> None:
     tree = _app_tree()
+    parent_by_child = {
+        child: parent
+        for parent in ast.walk(tree)
+        for child in ast.iter_child_nodes(parent)
+    }
+    discovery_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "discover_webcams"
+    ]
 
-    assert _contains_call(tree, "discover_webcams")
+    assert len(discovery_calls) == 1
     assert _contains_call(tree, "webcam")
     assert "Refresh cameras" in APP_PATH.read_text(encoding="utf-8")
     assert "Add camera" in APP_PATH.read_text(encoding="utf-8")
+
+    ancestor = parent_by_child.get(discovery_calls[0])
+    while ancestor is not None and not isinstance(ancestor, ast.If):
+        ancestor = parent_by_child.get(ancestor)
+
+    assert isinstance(ancestor, ast.If)
+    refresh_calls = [
+        node
+        for node in ast.walk(ancestor.test)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "button"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "Refresh cameras"
+    ]
+    assert len(refresh_calls) == 1
 
 
 @pytest.mark.parametrize(

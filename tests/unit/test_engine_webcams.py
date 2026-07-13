@@ -33,3 +33,18 @@ def test_replace_source_rejects_another_streams_webcam_before_stop(
 
     fake_engine.replace_source(camera, "webcam://0")
     assert fake_engine.get(camera).source.webcam_index == 0
+
+
+def test_only_local_file_reader_receives_initial_processing_barrier(
+    fake_engine,
+    synthetic_video,
+) -> None:
+    fake_engine.scheduler._detector_ready.set()
+    camera = fake_engine.add_stream(VideoSource.webcam(0))
+    local = fake_engine.add_stream(str(synthetic_video))
+
+    camera_reader = fake_engine._build_reader(fake_engine.get(camera))
+    local_reader = fake_engine._build_reader(fake_engine.get(local))
+
+    assert not camera_reader.wait_for_initial_processing
+    assert local_reader.wait_for_initial_processing

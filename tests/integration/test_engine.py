@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -111,6 +112,7 @@ def test_webcam_and_local_video_lifecycle_release_every_capture(
     assert wait_until(lambda: fake_engine.get(local).metrics.processed_frames >= 1)
     first_latency = fake_engine.get(camera).metrics.end_to_end_latency_ms
     first_capture = factory.captures[0][0]
+    first_reader = fake_engine.get(camera).reader
 
     time.sleep(0.5)
     camera_context = fake_engine.get(camera)
@@ -119,14 +121,17 @@ def test_webcam_and_local_video_lifecycle_release_every_capture(
 
     fake_engine.stop(camera)
     assert wait_until(lambda: first_capture.released)
+    assert not first_reader.running
 
     fake_engine.restart(camera)
     assert wait_until(lambda: len(factory.captures[0]) == 2)
     assert wait_until(lambda: fake_engine.get(camera).metrics.processed_frames >= 3)
     restarted_capture = factory.captures[0][1]
+    restarted_reader = fake_engine.get(camera).reader
 
     fake_engine.remove(camera)
     assert wait_until(lambda: restarted_capture.released)
+    assert not restarted_reader.running
     assert camera not in {context.stream_id for context in fake_engine.contexts()}
 
     assert wait_until(lambda: fake_engine.get(local).state is StreamState.EOF)
@@ -136,8 +141,10 @@ def test_webcam_and_local_video_lifecycle_release_every_capture(
     fake_engine.start(shutdown_camera)
     assert wait_until(lambda: fake_engine.get(shutdown_camera).metrics.processed_frames >= 1)
     shutdown_capture = factory.captures[1][0]
+    shutdown_reader = fake_engine.get(shutdown_camera).reader
     fake_engine.shutdown()
     assert wait_until(lambda: shutdown_capture.released)
+    assert not shutdown_reader.running
 
 
 def test_webcam_reconnects_after_three_read_failures(
@@ -159,6 +166,101 @@ def test_webcam_reconnects_after_three_read_failures(
 
     fake_engine.stop(camera)
     assert wait_until(lambda: factory.captures[0][1].released)
+
+
+def test_webcam_local_http_and_rtsp_share_pipeline_without_queue_growth(
+    fake_engine,
+    synthetic_video: Path,
+    monkeypatch,
+) -> None:
+    import vision_track.readers as readers
+
+    webcam_factory = FakeWebcamFactory()
+    monkeypatch.setattr(readers, "open_webcam", webcam_factory)
+    original_video_capture = readers.cv2.VideoCapture
+    remote_captures: dict[str, FakeWebcamCapture] = {}
+
+    def capture_factory(source):
+        uri = str(source)
+        if uri.startswith(("http://", "https://", "rtsp://", "rtsps://")):
+            capture = FakeWebcamCapture()
+            remote_captures[uri] = capture
+            return capture
+        return original_video_capture(source)
+
+    monkeypatch.setattr(readers.cv2, "VideoCapture", capture_factory)
+    stream_ids = {
+        "webcam": fake_engine.add_stream(VideoSource.webcam(0)),
+        "local": fake_engine.add_stream(str(synthetic_video)),
+        "http": fake_engine.add_stream("https://example.test/live.mp4"),
+        "rtsp": fake_engine.add_stream("rtsp://example.test/live"),
+    }
+
+    fake_engine.start_all()
+
+    for stream_id in stream_ids.values():
+        assert wait_until(
+            lambda stream_id=stream_id: (
+                fake_engine.get(stream_id).metrics.processed_frames >= 3
+            )
+        )
+    for source_name in ("webcam", "http", "rtsp"):
+        context = fake_engine.get(stream_ids[source_name])
+        assert context.state is StreamState.ACTIVE
+        assert context.queue._queue.maxsize == 1
+        assert context.queue._queue.qsize() <= 1
+        assert context.queue.received >= context.metrics.processed_frames
+
+    assert wait_until(
+        lambda: fake_engine.get(stream_ids["local"]).state is StreamState.EOF
+    )
+    fake_engine.stop_all()
+
+    assert webcam_factory.captures[0][0].released
+    assert all(capture.released for capture in remote_captures.values())
+
+
+def test_webcam_stop_during_blocked_render_is_prompt_and_drops_stale_publication(
+    fake_engine,
+    monkeypatch,
+) -> None:
+    import vision_track.readers as readers
+
+    webcam_factory = FakeWebcamFactory()
+    monkeypatch.setattr(readers, "open_webcam", webcam_factory)
+    render_started = threading.Event()
+    release_render = threading.Event()
+    render_finished = threading.Event()
+
+    def blocked_render(frame, *_args, **_kwargs):
+        render_started.set()
+        release_render.wait(timeout=3.0)
+        render_finished.set()
+        return frame
+
+    monkeypatch.setattr("vision_track.scheduler.render_frame", blocked_render)
+    camera = fake_engine.add_stream(VideoSource.webcam(0))
+    context = fake_engine.get(camera)
+    try:
+        fake_engine.start(camera)
+        assert render_started.wait(timeout=3.0)
+
+        started = time.perf_counter()
+        fake_engine.stop(camera)
+        stop_seconds = time.perf_counter() - started
+
+        assert stop_seconds < 1.0
+        assert webcam_factory.captures[0][0].released
+
+        release_render.set()
+        assert render_finished.wait(timeout=1.0)
+        fake_engine.scheduler.stop()
+
+        assert context.state is StreamState.STOPPED
+        assert context.latest_rendered_frame is None
+        assert context.metrics.processed_frames == 0
+    finally:
+        release_render.set()
 
 
 def test_working_and_broken_sources_do_not_share_failure(

@@ -354,6 +354,11 @@ pytest -q
 streamlit run app.py
 ```
 
+Real webcam, driver fallback, unplug/reconnect, device ownership, and visual-drift
+checks are tracked separately in
+[`docs/webcam_hardware_smoke.md`](docs/webcam_hardware_smoke.md). Its entries are
+deliberately `NOT RUN` until executed on the target hardware with recorded evidence.
+
 Audit performance thresholds are precision ≥ 0.85, recall ≥ 0.80, F1 ≥ 0.85, and average per-stream FPS ≥ 15 on 720p. These are targets, not hard-coded claims; `reports/performance_metrics.json` must contain measured values from the target hardware and isolated detection test set.
 
 ## Logging and failures

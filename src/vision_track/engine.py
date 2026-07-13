@@ -228,7 +228,9 @@ class ProcessingEngine:
             captured_source = context.source
             stream_id = context.stream_id
             wait_for_initial_processing = (
-                context.options.detection_enabled and self.scheduler.detector_ready
+                captured_source.source_type is SourceType.LOCAL
+                and context.options.detection_enabled
+                and self.scheduler.detector_ready
             )
 
         def is_current() -> bool:
