@@ -23,6 +23,7 @@ from vision_track.sources import SourceType, VideoSource
 from vision_track.streamlit_state import ENGINE_KEY
 from vision_track.ui import (
     StreamMetricsSnapshot,
+    escape_markdown_asterisks,
     replay_button_label,
     runtime_backend_summary,
     single_stream_column_weights,
@@ -412,7 +413,7 @@ def render_stream_metrics_card(stream_id: str) -> None:
         return
     st.caption(_stream_metrics_caption(snapshot))
     if snapshot.error:
-        st.error(snapshot.error)
+        st.error(escape_markdown_asterisks(snapshot.error))
 
 
 def render_detail_metrics(
@@ -446,7 +447,7 @@ def render_detail_metrics(
         + f" · source `{snapshot.source_type.value}`"
     )
     if snapshot.error:
-        st.error(snapshot.error)
+        st.error(escape_markdown_asterisks(snapshot.error))
 
 
 # Keep stream metrics in a single 4 Hz fragment.
@@ -471,7 +472,9 @@ def render_metrics_dashboard(
             render_stream_metrics_card(stream_id)
 
     if selected_stream_id and selected_display_name:
-        st.subheader(f"Details · {selected_display_name}")
+        st.subheader(
+            f"Details · {escape_markdown_asterisks(selected_display_name)}"
+        )
         render_detail_metrics(
             selected_stream_id,
             requested_backend,
@@ -496,7 +499,8 @@ else:
 
     for index, identity in enumerate(dashboard_identities):
         with stream_columns[index % len(stream_columns)]:
-            st.markdown(f"**{identity.display_name}**")
+            display_name = escape_markdown_asterisks(identity.display_name)
+            st.markdown(f"**{display_name}**")
             components.html(
                 build_preview_component_html(
                     port=preview_runtime.server.port,

@@ -15,6 +15,11 @@ UI_CANVAS_WIDTH = 960
 UI_CANVAS_HEIGHT = 540
 UI_JPEG_QUALITY = 85
 
+
+def escape_markdown_asterisks(value: str) -> str:
+    return value.replace("*", r"\*")
+
+
 @dataclass(frozen=True)
 class StreamMetricsSnapshot:
     stream_id: str

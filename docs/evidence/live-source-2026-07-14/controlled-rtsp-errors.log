@@ -1,0 +1,6 @@
+2026-07-14 00:24:58,231 | stream_id=stream-e185cd04 | source_type=rtsp | state=RECONNECTING | ERROR | OSError: Decoder/read failure for source: rtsp://***:***@127.0.0.1:8554/test
+2026-07-14 00:24:59,721 | stream_id=stream-e185cd04 | source_type=rtsp | state=RECONNECTING | ERROR | OSError: Unable to open video source: rtsp://***:***@127.0.0.1:8554/test
+2026-07-14 00:25:01,967 | stream_id=stream-e185cd04 | source_type=rtsp | state=RECONNECTING | ERROR | OSError: Unable to open video source: rtsp://***:***@127.0.0.1:8554/test
+2026-07-14 00:25:06,245 | stream_id=stream-e185cd04 | source_type=rtsp | state=RECONNECTING | ERROR | OSError: Unable to open video source: rtsp://***:***@127.0.0.1:8554/test
+2026-07-14 00:25:14,663 | stream_id=stream-e185cd04 | source_type=rtsp | state=RECONNECTING | ERROR | OSError: Unable to open video source: rtsp://***:***@127.0.0.1:8554/test
+2026-07-14 00:25:30,990 | stream_id=stream-e185cd04 | source_type=rtsp | state=FAILED | ERROR | OSError: Unable to open video source: rtsp://***:***@127.0.0.1:8554/test

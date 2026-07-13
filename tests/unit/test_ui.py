@@ -18,6 +18,7 @@ from vision_track.ui import (
     UI_CANVAS_HEIGHT,
     UI_CANVAS_WIDTH,
     encode_frame_jpeg,
+    escape_markdown_asterisks,
     fit_frame_to_canvas,
     replay_button_label,
     runtime_backend_summary,
@@ -28,6 +29,13 @@ from vision_track.ui import (
     stream_grid_columns,
     stream_source_token,
 )
+
+
+def test_markdown_asterisks_are_escaped_without_changing_other_text() -> None:
+    assert escape_markdown_asterisks("Camera 0") == "Camera 0"
+    assert escape_markdown_asterisks("rtsp://***:***@host/test") == (
+        r"rtsp://\*\*\*:\*\*\*@host/test"
+    )
 
 
 def _nonzero_bbox(frame: np.ndarray) -> tuple[int, int, int, int]:
