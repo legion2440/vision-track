@@ -17,7 +17,9 @@ if str(SRC) not in sys.path:
 from vision_track.configuration import load_config, resolve_project_path
 from vision_track.detector import available_backends
 from vision_track.engine import ProcessingEngine
+from vision_track.lifecycle import StreamState
 from vision_track.preview import build_preview_component_html, get_preview_runtime
+from vision_track.sources import SourceType, VideoSource
 from vision_track.streamlit_state import ENGINE_KEY
 from vision_track.ui import (
     StreamMetricsSnapshot,
@@ -29,12 +31,14 @@ from vision_track.ui import (
     snapshot_stream_metrics,
     stream_grid_columns,
 )
+from vision_track.webcams import discover_webcams
 
 
 st.set_page_config(page_title="VisionTrack", page_icon="🎯", layout="wide")
 config = load_config()
 preview_runtime = get_preview_runtime()
 PREVIEW_SESSION_TOKEN_KEY = "vision_preview_session_token_v1"
+WEBCAM_INDICES_KEY = "vision_webcam_indices_v1"
 session_token = st.session_state.get(PREVIEW_SESSION_TOKEN_KEY)
 if not isinstance(session_token, str) or not session_token:
     session_token = secrets.token_urlsafe(24)
@@ -104,6 +108,29 @@ with st.sidebar:
         identity.stream_id: f"{identity.stream_id} · {identity.display_name}"
         for identity in identities
     }
+    webcam_identities = [
+        identity
+        for identity in identities
+        if identity.source.source_type is SourceType.WEBCAM
+    ]
+    webcam_controls = {
+        identity.stream_id: snapshot_stream_controls(engine.get(identity.stream_id))
+        for identity in webcam_identities
+    }
+    added_camera_indices = {
+        identity.source.webcam_index for identity in webcam_identities
+    }
+    in_use_camera_indices = {
+        identity.source.webcam_index
+        for identity in webcam_identities
+        if webcam_controls[identity.stream_id].state
+        in {
+            StreamState.PREPARING,
+            StreamState.CONNECTING,
+            StreamState.ACTIVE,
+            StreamState.RECONNECTING,
+        }
+    }
 
     uploads = st.file_uploader(
         "Add local videos",
@@ -115,6 +142,47 @@ with st.sidebar:
             path = _save_upload(upload)
             if not any(identity.source.uri == str(path) for identity in identities):
                 engine.add_stream(str(path))
+        st.rerun()
+
+    st.subheader("Local camera")
+    if st.button("Refresh cameras", use_container_width=True):
+        st.session_state[WEBCAM_INDICES_KEY] = discover_webcams(
+            in_use_indices=in_use_camera_indices,
+        )
+        st.rerun()
+    discovered_camera_indices = st.session_state.get(WEBCAM_INDICES_KEY, [])
+    camera_indices = sorted(
+        {
+            int(index)
+            for index in discovered_camera_indices
+            if isinstance(index, int) and not isinstance(index, bool) and index >= 0
+        }
+        | added_camera_indices
+    )
+
+    def camera_label(index: int) -> str:
+        if index in in_use_camera_indices:
+            return f"Camera {index} — in use"
+        if index in added_camera_indices:
+            return f"Camera {index} — added"
+        return f"Camera {index}"
+
+    selected_camera_index = st.selectbox(
+        "Camera device",
+        camera_indices,
+        format_func=camera_label,
+        index=0 if camera_indices else None,
+        placeholder="Refresh to discover cameras",
+    )
+    if st.button(
+        "Add camera",
+        use_container_width=True,
+        disabled=(
+            selected_camera_index is None
+            or selected_camera_index in added_camera_indices
+        ),
+    ):
+        engine.add_stream(VideoSource.webcam(selected_camera_index))
         st.rerun()
 
     remote_url = st.text_input("HTTP or RTSP URL", type="password")
@@ -417,7 +485,7 @@ dashboard_requested_backend = engine.detector.name
 dashboard_requested_device = engine.device.kind
 
 if not dashboard_identities:
-    st.info("Add a local video or an HTTP/RTSP source from the sidebar.")
+    st.info("Add a local video, local camera, or HTTP/RTSP source from the sidebar.")
 else:
     st.subheader("Streams")
     if len(dashboard_identities) == 1:

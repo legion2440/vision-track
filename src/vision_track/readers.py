@@ -8,17 +8,22 @@ from time import perf_counter
 from typing import Callable
 
 import cv2
+import numpy as np
 
 from .lifecycle import StreamState
 from .logging_utils import log_stream_error
 from .queues import FramePacket, LatestFrameQueue
 from .sources import SourceType, VideoSource
+from .webcams import open_webcam
 
 
 DEFAULT_LOCAL_FPS = 30.0
 MAX_REASONABLE_FPS = 240.0
 LOCAL_READ_RETRIES = 3
 LOCAL_RETRY_WAIT_SECONDS = 0.01
+WEBCAM_READ_FAILURE_LIMIT = 3
+WEBCAM_STABLE_FRAME_COUNT = 30
+WEBCAM_STABLE_SECONDS = 3.0
 
 
 def _safe_capture_value(capture: cv2.VideoCapture, prop: int) -> float | None:
@@ -58,6 +63,18 @@ def _local_read_is_eof(capture: cv2.VideoCapture, frames_read: int) -> bool:
     return ratio is not None and ratio >= 0.99
 
 
+def _webcam_connection_is_stable(
+    successful_frames: int,
+    stable_since: float | None,
+    now: float,
+) -> bool:
+    return (
+        successful_frames >= WEBCAM_STABLE_FRAME_COUNT
+        and stable_since is not None
+        and now - stable_since >= WEBCAM_STABLE_SECONDS
+    )
+
+
 class VideoReader:
     def __init__(
         self,
@@ -94,6 +111,7 @@ class VideoReader:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._capture: cv2.VideoCapture | None = None
+        self._prefetched_webcam_frame: tuple[np.ndarray, float] | None = None
         self._lock = threading.Lock()
 
     @property
@@ -123,6 +141,19 @@ class VideoReader:
         self._capture = None
 
     def _open(self) -> cv2.VideoCapture:
+        self._prefetched_webcam_frame = None
+        if self.source.source_type is SourceType.WEBCAM:
+            opened = open_webcam(
+                self.source.webcam_index,
+                clock=self._clock,
+                capture_callback=lambda capture: setattr(self, "_capture", capture),
+                cancelled=lambda: self._stop_event.is_set() or not self._is_current(),
+            )
+            self._prefetched_webcam_frame = (
+                opened.first_frame,
+                opened.captured_at,
+            )
+            return opened.capture
         if self.source.source_type is SourceType.LOCAL and not Path(self.source.uri).is_file():
             raise FileNotFoundError(f"Video file not found: {self.source.safe_uri}")
         capture = cv2.VideoCapture(self.source.uri)
@@ -208,6 +239,9 @@ class VideoReader:
                 previous_timestamp_ms: float | None = None
                 playback_origin: float | None = None
                 local_failures = 0
+                webcam_failures = 0
+                webcam_stable_frames = 0
+                webcam_stable_since: float | None = None
                 if not self._is_current():
                     return
                 if not self._emit_error(None):
@@ -216,11 +250,20 @@ class VideoReader:
                     return
                 if not self._emit_state(StreamState.ACTIVE):
                     return
-                attempt = 0
+                if self.source.source_type is not SourceType.WEBCAM:
+                    attempt = 0
                 while not self._stop_event.is_set():
                     if not self._is_current():
                         return
-                    ok, frame = self._capture.read()
+                    captured_at: float | None = None
+                    if self._prefetched_webcam_frame is not None:
+                        frame, captured_at = self._prefetched_webcam_frame
+                        self._prefetched_webcam_frame = None
+                        ok = True
+                    else:
+                        ok, frame = self._capture.read()
+                        if self.source.source_type is SourceType.WEBCAM:
+                            captured_at = self._clock()
                     if not ok or frame is None:
                         if self._stop_event.is_set():
                             break
@@ -244,19 +287,44 @@ class VideoReader:
                                 "Decode failure before end of local video: "
                                 f"{self.source.safe_uri}"
                             )
+                        if self.source.source_type is SourceType.WEBCAM:
+                            webcam_failures += 1
+                            webcam_stable_frames = 0
+                            webcam_stable_since = None
+                            if webcam_failures < WEBCAM_READ_FAILURE_LIMIT:
+                                if self._stop_event.wait(LOCAL_RETRY_WAIT_SECONDS):
+                                    break
+                                continue
                         raise OSError(
                             f"Decoder/read failure for source: {self.source.safe_uri}"
                         )
                     local_failures = 0
-                    timestamp = _valid_timestamp_ms(
-                        _safe_capture_value(self._capture, cv2.CAP_PROP_POS_MSEC),
-                        previous_timestamp_ms,
-                    )
-                    if timestamp is not None:
-                        previous_timestamp_ms = timestamp
-                    target_seconds = (
-                        timestamp / 1000.0 if timestamp is not None else frame_index / source_fps
-                    )
+                    webcam_failures = 0
+                    if self.source.source_type is SourceType.WEBCAM:
+                        timestamp = None
+                        target_seconds = 0.0
+                        captured_at = captured_at if captured_at is not None else self._clock()
+                        if webcam_stable_since is None:
+                            webcam_stable_since = captured_at
+                        webcam_stable_frames += 1
+                        if attempt and _webcam_connection_is_stable(
+                            webcam_stable_frames,
+                            webcam_stable_since,
+                            captured_at,
+                        ):
+                            attempt = 0
+                    else:
+                        timestamp = _valid_timestamp_ms(
+                            _safe_capture_value(self._capture, cv2.CAP_PROP_POS_MSEC),
+                            previous_timestamp_ms,
+                        )
+                        if timestamp is not None:
+                            previous_timestamp_ms = timestamp
+                        target_seconds = (
+                            timestamp / 1000.0
+                            if timestamp is not None
+                            else frame_index / source_fps
+                        )
                     if self.source.source_type is SourceType.LOCAL:
                         if playback_origin is None:
                             if not self.wait_for_initial_processing:
@@ -271,7 +339,11 @@ class VideoReader:
                     packet = FramePacket(
                         frame=frame,
                         frame_index=frame_index,
-                        captured_at=self._clock(),
+                        captured_at=(
+                            captured_at
+                            if captured_at is not None
+                            else self._clock()
+                        ),
                         runtime_generation=self.runtime_generation,
                         source_timestamp_ms=timestamp,
                         # The first real prediction can still initialize source-shaped
@@ -303,7 +375,8 @@ class VideoReader:
                     return
                 current = (
                     StreamState.RECONNECTING
-                    if self.source.is_remote and attempt <= self.reconnect_attempts
+                    if self.source.is_reconnectable
+                    and attempt <= self.reconnect_attempts
                     else StreamState.FAILED
                 )
                 if not self._is_current():
@@ -314,7 +387,7 @@ class VideoReader:
                     return
                 if not self._emit_failure_log(exc, current):
                     return
-                if not self.source.is_remote or attempt > self.reconnect_attempts:
+                if not self.source.is_reconnectable or attempt > self.reconnect_attempts:
                     return
                 if not self._is_current():
                     return

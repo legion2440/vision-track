@@ -268,6 +268,15 @@ def test_app_renders_and_registers_websocket_preview() -> None:
     assert _contains_call(tree, "replace_session")
 
 
+def test_app_exposes_manual_server_webcam_discovery_and_add() -> None:
+    tree = _app_tree()
+
+    assert _contains_call(tree, "discover_webcams")
+    assert _contains_call(tree, "webcam")
+    assert "Refresh cameras" in APP_PATH.read_text(encoding="utf-8")
+    assert "Add camera" in APP_PATH.read_text(encoding="utf-8")
+
+
 @pytest.mark.parametrize(
     "function_name",
     ["render_stream_metrics_card", "render_detail_metrics"],

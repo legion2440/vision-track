@@ -7,8 +7,13 @@ from pathlib import Path
 import numpy as np
 
 from vision_track.lifecycle import StreamState
-from vision_track.readers import VideoReader, _local_read_is_eof
+from vision_track.readers import (
+    VideoReader,
+    _local_read_is_eof,
+    _webcam_connection_is_stable,
+)
 from vision_track.sources import VideoSource
+from vision_track.webcams import OpenedWebcam
 
 
 class FakeClock:
@@ -409,3 +414,129 @@ def test_stop_during_local_pacing_wait_is_interruptible(monkeypatch, tmp_path) -
 
     assert len(queue.packets) == 1
     assert states[-1] is StreamState.STOPPED
+
+
+def _run_webcam_reader(
+    monkeypatch,
+    opened_results: list[OpenedWebcam | Exception],
+    *,
+    reconnect_attempts: int,
+    wait_for_initial_processing: bool = False,
+):
+    import vision_track.readers as readers
+
+    states: list[StreamState] = []
+    errors: list[str | None] = []
+    queue = RecordingQueue()
+    clock = FakeClock()
+    open_calls: list[int] = []
+    pending = list(opened_results)
+
+    def fake_open_webcam(index: int, **kwargs) -> OpenedWebcam:
+        open_calls.append(index)
+        result = pending.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        kwargs["capture_callback"](result.capture)
+        return result
+
+    monkeypatch.setattr(readers, "open_webcam", fake_open_webcam)
+    reader = VideoReader(
+        stream_id="camera-stream",
+        source=VideoSource.webcam(2),
+        frame_queue=queue,
+        state_callback=states.append,
+        error_callback=errors.append,
+        logger=logging.getLogger("test-webcam-reader"),
+        reconnect_attempts=reconnect_attempts,
+        reconnect_backoff_seconds=0.0,
+        wait_for_initial_processing=wait_for_initial_processing,
+        clock=clock,
+    )
+    stop_event = FakeStopEvent(clock)
+    reader._stop_event = stop_event
+    reader._run()
+    return queue, states, errors, stop_event, open_calls
+
+
+def _opened_webcam(capture: FakeCapture, *, value: int, captured_at: float) -> OpenedWebcam:
+    return OpenedWebcam(
+        capture=capture,
+        first_frame=np.full((4, 4, 3), value, dtype=np.uint8),
+        captured_at=captured_at,
+        backend=0,
+    )
+
+
+def test_webcam_preserves_validated_first_frame_and_has_no_local_barrier(
+    monkeypatch,
+) -> None:
+    capture = FakeCapture(frames=1, timestamps=[0.0], fps=30.0)
+    capture.index = 1
+    queue, states, errors, stop_event, open_calls = _run_webcam_reader(
+        monkeypatch,
+        [_opened_webcam(capture, value=9, captured_at=7.5)],
+        reconnect_attempts=0,
+        wait_for_initial_processing=True,
+    )
+
+    assert open_calls == [2]
+    assert len(queue.packets) == 1
+    assert np.all(queue.packets[0].frame == 9)
+    assert queue.packets[0].captured_at == 7.5
+    assert queue.packets[0].source_timestamp_ms is None
+    assert queue.packets[0].processing_complete is None
+    assert StreamState.EOF not in states
+    assert states[-1] is StreamState.FAILED
+    assert errors[0] is None
+    assert len(stop_event.waits) == 2
+    assert capture.released
+
+
+def test_webcam_uses_three_consecutive_read_failures_before_reconnect(
+    monkeypatch,
+) -> None:
+    first = FakeCapture(frames=1, timestamps=[0.0], fps=30.0)
+    first.index = 1
+    second = FakeCapture(frames=1, timestamps=[0.0], fps=30.0)
+    second.index = 1
+
+    queue, states, _, stop_event, open_calls = _run_webcam_reader(
+        monkeypatch,
+        [
+            _opened_webcam(first, value=1, captured_at=10.0),
+            _opened_webcam(second, value=2, captured_at=10.5),
+        ],
+        reconnect_attempts=1,
+    )
+
+    assert open_calls == [2, 2]
+    assert [int(packet.frame[0, 0, 0]) for packet in queue.packets] == [1, 2]
+    assert states.count(StreamState.RECONNECTING) == 1
+    assert states[-1] is StreamState.FAILED
+    assert len(stop_event.waits) == 5
+    assert first.released and second.released
+
+
+def test_webcam_open_failures_exhaust_bounded_reconnect_budget(monkeypatch) -> None:
+    _, states, errors, _, open_calls = _run_webcam_reader(
+        monkeypatch,
+        [OSError("one"), OSError("two"), OSError("three")],
+        reconnect_attempts=2,
+    )
+
+    assert open_calls == [2, 2, 2]
+    assert states == [
+        StreamState.CONNECTING,
+        StreamState.RECONNECTING,
+        StreamState.RECONNECTING,
+        StreamState.FAILED,
+    ]
+    assert errors == ["one", "two", "three"]
+
+
+def test_webcam_reconnect_budget_resets_only_after_frames_and_time() -> None:
+    assert not _webcam_connection_is_stable(29, 10.0, 13.0)
+    assert not _webcam_connection_is_stable(30, 10.0, 12.999)
+    assert _webcam_connection_is_stable(30, 10.0, 13.0)
+    assert not _webcam_connection_is_stable(30, None, 13.0)

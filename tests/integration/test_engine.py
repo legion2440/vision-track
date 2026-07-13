@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -8,6 +9,8 @@ import pytest
 
 from vision_track.lifecycle import StreamState
 from vision_track.queues import FramePacket
+from vision_track.sources import VideoSource
+from vision_track.webcams import OpenedWebcam
 
 
 pytestmark = pytest.mark.integration
@@ -20,6 +23,56 @@ def wait_until(predicate, timeout: float = 5.0) -> bool:
             return True
         time.sleep(0.05)
     return False
+
+
+class FakeWebcamCapture:
+    def __init__(self, *, successful_reads: int | None = None) -> None:
+        self.successful_reads = successful_reads
+        self.read_count = 0
+        self.released = False
+
+    def isOpened(self) -> bool:
+        return not self.released
+
+    def read(self):
+        time.sleep(0.01)
+        if self.released:
+            return False, None
+        if self.successful_reads is not None and self.read_count >= self.successful_reads:
+            return False, None
+        value = self.read_count % 255
+        self.read_count += 1
+        return True, np.full((120, 160, 3), value, dtype=np.uint8)
+
+    def get(self, _prop: int) -> float:
+        return 30.0
+
+    def release(self) -> None:
+        self.released = True
+
+
+class FakeWebcamFactory:
+    def __init__(self, limits: dict[int, list[int | None]] | None = None) -> None:
+        self.limits = {index: list(values) for index, values in (limits or {}).items()}
+        self.captures: dict[int, list[FakeWebcamCapture]] = defaultdict(list)
+
+    def __call__(self, index: int, **kwargs) -> OpenedWebcam:
+        limits = self.limits.get(index, [])
+        successful_reads = limits.pop(0) if limits else None
+        capture = FakeWebcamCapture(successful_reads=successful_reads)
+        self.captures[index].append(capture)
+        kwargs["capture_callback"](capture)
+        ok, frame = capture.read()
+        if not ok or frame is None:
+            capture.release()
+            kwargs["capture_callback"](None)
+            raise OSError(f"Unable to open webcam device {index}")
+        return OpenedWebcam(
+            capture=capture,
+            first_frame=frame,
+            captured_at=kwargs["clock"](),
+            backend=0,
+        )
 
 
 def test_single_local_video_reaches_eof(fake_engine, synthetic_video: Path) -> None:
@@ -39,6 +92,73 @@ def test_two_local_videos_are_independent(fake_engine, synthetic_video: Path) ->
     assert wait_until(lambda: fake_engine.get(second).metrics.processed_frames > 0)
     assert fake_engine.get(first).tracker is not fake_engine.get(second).tracker
     assert fake_engine.get(first).counter is not fake_engine.get(second).counter
+
+
+def test_webcam_and_local_video_lifecycle_release_every_capture(
+    fake_engine,
+    synthetic_video: Path,
+    monkeypatch,
+) -> None:
+    import vision_track.readers as readers
+
+    factory = FakeWebcamFactory()
+    monkeypatch.setattr(readers, "open_webcam", factory)
+    camera = fake_engine.add_stream(VideoSource.webcam(0))
+    local = fake_engine.add_stream(str(synthetic_video))
+
+    fake_engine.start_all()
+    assert wait_until(lambda: fake_engine.get(camera).metrics.processed_frames >= 5)
+    assert wait_until(lambda: fake_engine.get(local).metrics.processed_frames >= 1)
+    first_latency = fake_engine.get(camera).metrics.end_to_end_latency_ms
+    first_capture = factory.captures[0][0]
+
+    time.sleep(0.5)
+    camera_context = fake_engine.get(camera)
+    assert camera_context.metrics.processed_frames >= 10
+    assert camera_context.metrics.end_to_end_latency_ms < max(1_000.0, first_latency * 5)
+
+    fake_engine.stop(camera)
+    assert wait_until(lambda: first_capture.released)
+
+    fake_engine.restart(camera)
+    assert wait_until(lambda: len(factory.captures[0]) == 2)
+    assert wait_until(lambda: fake_engine.get(camera).metrics.processed_frames >= 3)
+    restarted_capture = factory.captures[0][1]
+
+    fake_engine.remove(camera)
+    assert wait_until(lambda: restarted_capture.released)
+    assert camera not in {context.stream_id for context in fake_engine.contexts()}
+
+    assert wait_until(lambda: fake_engine.get(local).state is StreamState.EOF)
+    fake_engine.remove(local)
+
+    shutdown_camera = fake_engine.add_stream(VideoSource.webcam(1))
+    fake_engine.start(shutdown_camera)
+    assert wait_until(lambda: fake_engine.get(shutdown_camera).metrics.processed_frames >= 1)
+    shutdown_capture = factory.captures[1][0]
+    fake_engine.shutdown()
+    assert wait_until(lambda: shutdown_capture.released)
+
+
+def test_webcam_reconnects_after_three_read_failures(
+    fake_engine,
+    monkeypatch,
+) -> None:
+    import vision_track.readers as readers
+
+    factory = FakeWebcamFactory({0: [3, None]})
+    monkeypatch.setattr(readers, "open_webcam", factory)
+    camera = fake_engine.add_stream(VideoSource.webcam(0))
+
+    fake_engine.start(camera)
+
+    assert wait_until(lambda: len(factory.captures[0]) == 2, timeout=4.0)
+    assert factory.captures[0][0].released
+    assert wait_until(lambda: fake_engine.get(camera).metrics.processed_frames >= 5)
+    assert fake_engine.get(camera).state is StreamState.ACTIVE
+
+    fake_engine.stop(camera)
+    assert wait_until(lambda: factory.captures[0][1].released)
 
 
 def test_working_and_broken_sources_do_not_share_failure(

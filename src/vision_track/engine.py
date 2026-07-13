@@ -18,7 +18,7 @@ from .queues import FramePacket
 from .readers import VideoReader
 from .rendering import render_frame
 from .scheduler import SharedInferenceScheduler
-from .sources import VideoSource, new_stream_id
+from .sources import SourceType, VideoSource, new_stream_id
 from .tracking import ByteTrackSettings, StreamTracker
 
 
@@ -114,6 +114,22 @@ class ProcessingEngine:
         cfg = self.config.counting
         return ZoneGeometry(cfg.line_start, cfg.line_end, cfg.polygon)
 
+    def _ensure_webcam_available_locked(
+        self,
+        source: VideoSource,
+        *,
+        exclude_stream_id: str | None = None,
+    ) -> None:
+        if source.source_type is not SourceType.WEBCAM:
+            return
+        for context in self._contexts.values():
+            if context.stream_id == exclude_stream_id:
+                continue
+            with context.lock:
+                existing_source = context.source
+            if existing_source.uri == source.uri:
+                raise ValueError(f"Camera {source.webcam_index} is already added")
+
     def _is_clean_context(self, context: StreamContext) -> bool:
         return (
             context.metrics.processed_frames == 0
@@ -191,6 +207,7 @@ class ProcessingEngine:
         with self._lock:
             if identifier in self._contexts:
                 raise ValueError(f"Stream ID already exists: {identifier}")
+            self._ensure_webcam_available_locked(source_obj)
             context = StreamContext(
                 stream_id=identifier,
                 source=source_obj,
@@ -365,10 +382,22 @@ class ProcessingEngine:
             self._contexts.pop(context.stream_id, None)
 
     def replace_source(self, stream_id: str, source: VideoSource | str) -> None:
+        source_obj = source if isinstance(source, VideoSource) else VideoSource.from_uri(source)
+        with self._lock:
+            if stream_id not in self._contexts:
+                raise KeyError(f"Unknown stream: {stream_id}")
+            self._ensure_webcam_available_locked(
+                source_obj,
+                exclude_stream_id=stream_id,
+            )
         self.stop(stream_id)
         context = self.get(stream_id)
-        source_obj = source if isinstance(source, VideoSource) else VideoSource.from_uri(source)
-        self._reset_context_runtime(context, source=source_obj)
+        with self._lock:
+            self._ensure_webcam_available_locked(
+                source_obj,
+                exclude_stream_id=stream_id,
+            )
+            self._reset_context_runtime(context, source=source_obj)
 
     def reset_counters(self, stream_id: str) -> None:
         context = self.get(stream_id)

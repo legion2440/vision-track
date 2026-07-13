@@ -216,6 +216,16 @@ def test_local_completed_stream_uses_replay_label() -> None:
     assert replay_button_label(control) == "Replay"
 
 
+def test_webcam_stream_always_uses_restart_label() -> None:
+    control = _control_snapshot(
+        source_type=SourceType.WEBCAM,
+        state=StreamState.FAILED,
+        processed_frames=3,
+    )
+
+    assert replay_button_label(control) == "Restart"
+
+
 def test_fit_landscape_frame_to_canvas_without_black_bars() -> None:
     frame = np.full((1080, 1920, 3), 64, dtype=np.uint8)
     original = frame.copy()

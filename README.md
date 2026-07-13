@@ -2,17 +2,17 @@
 
 VisionTrack is a multi-stream person detection, tracking, line-crossing, and ROI-occupancy application. It uses an Ultralytics YOLO26 nano detector, one shared inference scheduler, a separate video reader and ByteTrack state for every stream, OpenCV rendering, and a Streamlit dashboard.
 
-The project supports local videos, HTTP video URLs, and RTSP URLs. CUDA is selected first when available, then Apple MPS, then CPU. OpenCV CUDA is not required; acceleration applies to PyTorch inference. ONNX Runtime INT8 inference uses CUDA only when a CUDA execution provider is installed and available, otherwise it reports and uses CPU.
+The project supports local videos, server-side local webcams, HTTP video URLs, and RTSP URLs. CUDA is selected first when available, then Apple MPS, then CPU. OpenCV CUDA is not required; acceleration applies to PyTorch inference. ONNX Runtime INT8 inference uses CUDA only when a CUDA execution provider is installed and available, otherwise it reports and uses CPU.
 
 ## Features
 
-- Multiple simultaneous local, HTTP, and RTSP sources.
+- Multiple simultaneous local-file, local-webcam, HTTP, and RTSP sources.
 - A single detector instance shared across streams.
 - One reader thread and one latest-frame queue of size 1 per stream.
 - Stale frame dropping instead of latency-producing queue growth.
 - Per-stream ByteTrack, trajectories, line counts, polygon occupancy, settings, errors, and lifecycle.
 - States: `CREATED`, `CONNECTING`, `ACTIVE`, `EOF`, `RECONNECTING`, `FAILED`, and `STOPPED`.
-- Bounded reconnect with exponential backoff for HTTP/RTSP; local EOF never reconnects.
+- Bounded reconnect with exponential backoff for webcams and HTTP/RTSP; local-file EOF never reconnects.
 - Per-stream start, stop, restart, removal, source replacement, tracker reset, and counter reset.
 - PyTorch and direct ONNX Runtime detector backends with a common detection format.
 - Credential and query-token masking in logs and displayed errors.
@@ -53,7 +53,7 @@ src/vision_track/
   context.py             scheduler.py         tracking.py
   counting.py            rendering.py         metrics.py
   engine.py              logging_utils.py     streamlit_state.py
-  preview.py
+  preview.py             webcams.py
 scripts/
 notebooks/VisionTrack_Analysis.ipynb
 data/{raw,processed,demo}/
@@ -300,6 +300,7 @@ streamlit run app.py
 Sidebar controls:
 
 - add multiple uploaded videos;
+- refresh local camera devices and add a camera;
 - add HTTP/RTSP URLs;
 - select/remove a stream;
 - confidence and IoU;
@@ -310,7 +311,7 @@ Sidebar controls:
 
 The main area shows a stream grid and selected-stream detail: rendered frame, source/lifecycle/error state, actual device/backend, FPS, model and end-to-end latency, dropped-frame rate, in/out counts, and occupancy.
 
-Local videos, HTTP URLs, and RTSP URLs remain backend inputs. Browser webcam input is out of scope. Rendered previews use one persistent HTML canvas per stream and a latest-only WebSocket bound to `127.0.0.1`.
+Local videos, `webcam://N` devices, HTTP URLs, and RTSP URLs are backend inputs. A local camera is opened by OpenCV on the machine running Streamlit; Refresh probes indices 0 through 9 without reopening a camera that is already active in the session. On Windows, camera opening validates the first frame with MSMF and falls back to DSHOW. Browser `getUserMedia`, browser-to-server frame transfer, and WebRTC are out of scope. Rendered previews use one persistent HTML canvas per stream and a latest-only WebSocket bound to `127.0.0.1`.
 
 The engine and preview session token are stored in `st.session_state`; normal Streamlit reruns reuse detector, scheduler, reader, tracker, counter, and preview bindings. A preview socket reconnect or iframe remount within that session reuses a compatible cached JPEG. A hard browser reload (`Ctrl+R`) resets Streamlit Session State and isn't expected to preserve streams or engine state.
 
@@ -337,7 +338,7 @@ python -c "import torch, supervision, cv2, streamlit"
 pytest -q
 ```
 
-Tests cover device priority/fallback, annotations, detection filtering/format, frame dropping, independent tracking/counting state, composite IDs, line crossing and re-entry, metrics/schema, lifecycle, credential masking, local video integration, two streams, broken plus working sources, EOF, stop/replay/remove/replace, latest-only WebSocket preview semantics, Streamlit state reuse, ONNX inference, audit imports, and Streamlit startup.
+Tests cover device priority/fallback, annotations, detection filtering/format, frame dropping, independent tracking/counting state, composite IDs, line crossing and re-entry, metrics/schema, lifecycle, credential masking, local video and fake-webcam integration, webcam reconnect/release, two streams, broken plus working sources, EOF, stop/replay/remove/replace, latest-only WebSocket preview semantics, Streamlit state reuse, ONNX inference, audit imports, and Streamlit startup.
 
 The real pretrained CPU inference test is opt-in because it may download model weights:
 
@@ -359,11 +360,11 @@ Audit performance thresholds are precision ≥ 0.85, recall ≥ 0.80, F1 ≥ 0.8
 
 Errors are written to `logs/app_errors.log` with timestamp, stream ID, source type, lifecycle state, exception type/message, and traceback for unexpected failures. RTSP user information and common token/password query parameters are masked.
 
-Handled failures include missing/corrupt files, unavailable URLs, RTSP disconnects, decoder errors, local EOF, model/backend load errors, worker exceptions, invalid ROIs, and invalid configuration. A failed stream does not stop readers or tracking state for other streams.
+Handled failures include missing/corrupt files, unavailable cameras or URLs, webcam/RTSP disconnects, decoder errors, local EOF, model/backend load errors, worker exceptions, invalid ROIs, and invalid configuration. A failed stream does not stop readers or tracking state for other streams.
 
 ## Limitations
 
-- Browser webcam capture is not required or implemented.
+- Browser webcam capture is not required or implemented; webcam sources refer to devices attached to the Streamlit host.
 - Hard browser reload does not preserve streams or engine state; reconnect support is scoped to the same Streamlit session.
 - Preview registry entries from unexpectedly disappeared Streamlit sessions may remain until process shutdown. Patch 1 intentionally has no TTL cleanup.
 - OpenCV wheels are CPU-only; GPU acceleration is detector inference through PyTorch CUDA/MPS or an installed ONNX Runtime provider.
@@ -378,6 +379,7 @@ Handled failures include missing/corrupt files, unavailable URLs, RTSP disconnec
 - If `torch.cuda.is_available()` is false, verify the NVIDIA driver and reinstall the PyTorch build selected for the machine.
 - If MPS is unavailable, verify Apple Silicon, supported macOS, and an MPS-enabled PyTorch wheel.
 - If RTSP fails, test the URL and codec with another client; credentials will be masked in logs.
+- If a local camera is missing, close other applications that may hold it, click Refresh cameras, and retry; Windows tries MSMF and then DSHOW.
 - If MP4 writing fails, install an OpenCV/FFmpeg build with an MP4 encoder or use compatible input/output codecs.
 - If ONNX is not offered in the UI, run `scripts/quantize.py` successfully first.
 - If the app appears delayed, inspect dropped-frame rate and lower stream count or inference image size; the queue intentionally drops stale frames to preserve freshness.
