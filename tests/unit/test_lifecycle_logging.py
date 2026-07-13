@@ -10,6 +10,8 @@ from vision_track.logging_utils import configure_logging, mask_sensitive
 
 
 def test_state_transitions() -> None:
+    assert can_transition(StreamState.CREATED, StreamState.PREPARING)
+    assert can_transition(StreamState.PREPARING, StreamState.CONNECTING)
     assert can_transition(StreamState.CREATED, StreamState.CONNECTING)
     assert can_transition(StreamState.ACTIVE, StreamState.EOF)
     with pytest.raises(ValueError):

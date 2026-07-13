@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import atexit
 import threading
+from concurrent.futures import Future
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -119,6 +120,7 @@ class ProcessingEngine:
                         tracker_settings=replace(context.tracker.settings),
                         was_running=context.state
                         in {
+                            StreamState.PREPARING,
                             StreamState.CONNECTING,
                             StreamState.ACTIVE,
                             StreamState.RECONNECTING,
@@ -190,6 +192,9 @@ class ProcessingEngine:
             captured_generation = context.runtime_generation
             captured_source = context.source
             stream_id = context.stream_id
+            wait_for_initial_processing = (
+                context.options.detection_enabled and self.scheduler.detector_ready
+            )
 
         def is_current() -> bool:
             with context.lock:
@@ -243,19 +248,82 @@ class ProcessingEngine:
             is_current_callback=is_current,
             packet_callback=packet_callback,
             failure_log_callback=failure_log_callback,
+            wait_for_initial_processing=wait_for_initial_processing,
         )
+
+    def _start_reader_if_current(
+        self,
+        context: StreamContext,
+        runtime_generation: int,
+    ) -> None:
+        with context.lock:
+            if self._shutdown or context.runtime_generation != runtime_generation:
+                return
+            if context.reader and context.reader.running:
+                return
+            context.reader = self._build_reader(context)
+            context.error = None
+            self.scheduler.start()
+            context.reader.start()
+
+    def _finish_detector_preparation(
+        self,
+        context: StreamContext,
+        runtime_generation: int,
+        future: Future[None],
+    ) -> None:
+        try:
+            future.result()
+        except Exception as exc:
+            with context.lock:
+                if (
+                    self._shutdown
+                    or context.runtime_generation != runtime_generation
+                    or context.state is not StreamState.PREPARING
+                ):
+                    return
+                context.error = f"Detector preparation failed: {exc}"
+                context.force_state(StreamState.FAILED)
+                log_stream_error(
+                    self.logger,
+                    stream_id=context.stream_id,
+                    source_type=context.source.source_type.value,
+                    state=StreamState.FAILED.value,
+                    exc=exc,
+                )
+            return
+        with context.lock:
+            if context.state is not StreamState.PREPARING:
+                return
+        self._start_reader_if_current(context, runtime_generation)
 
     def start(self, stream_id: str) -> None:
         context = self.get(stream_id)
         with context.lock:
             if context.reader and context.reader.running:
                 return
+            if context.state is StreamState.PREPARING:
+                return
             if not self._is_clean_context(context):
                 self._reset_context_runtime(context)
-            context.reader = self._build_reader(context)
+            runtime_generation = context.runtime_generation
+            detection_enabled = context.options.detection_enabled
             context.error = None
-        self.scheduler.start()
-        context.reader.start()
+            if detection_enabled:
+                context.force_state(StreamState.PREPARING)
+
+        if not detection_enabled:
+            self._start_reader_if_current(context, runtime_generation)
+            return
+
+        preparation = self.scheduler.prepare_detector()
+        preparation.add_done_callback(
+            lambda future: self._finish_detector_preparation(
+                context,
+                runtime_generation,
+                future,
+            )
+        )
 
     def stop(self, stream_id: str) -> None:
         context = self.get(stream_id)

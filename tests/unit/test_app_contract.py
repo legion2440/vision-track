@@ -178,6 +178,7 @@ def test_required_app_functions_exist() -> None:
     assert "render_detail_controls" in functions
     assert "render_stream_metrics_card" in functions
     assert "render_detail_metrics" in functions
+    assert "render_metrics_dashboard" in functions
 
 
 @pytest.mark.parametrize(
@@ -225,6 +226,38 @@ def test_app_has_no_live_frame_streamlit_polling_path() -> None:
                     and isinstance(keyword.value, ast.Constant)
                     and keyword.value.value == 0.01
                 )
+
+
+def test_metrics_use_one_auto_refresh_fragment() -> None:
+    functions = _functions_by_name(_app_tree())
+    auto_refresh_functions = []
+
+    for name, function in functions.items():
+        for decorator in function.decorator_list:
+            if not isinstance(decorator, ast.Call):
+                continue
+            if not (
+                isinstance(decorator.func, ast.Attribute)
+                and decorator.func.attr == "fragment"
+            ):
+                continue
+            if any(
+                keyword.arg == "run_every"
+                and isinstance(keyword.value, ast.Constant)
+                and keyword.value.value == 0.25
+                for keyword in decorator.keywords
+            ):
+                auto_refresh_functions.append(name)
+
+    assert auto_refresh_functions == ["render_metrics_dashboard"]
+    assert _contains_call(
+        functions["render_metrics_dashboard"],
+        "render_stream_metrics_card",
+    )
+    assert _contains_call(
+        functions["render_metrics_dashboard"],
+        "render_detail_metrics",
+    )
 
 
 def test_app_renders_and_registers_websocket_preview() -> None:

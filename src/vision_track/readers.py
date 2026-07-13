@@ -74,6 +74,7 @@ class VideoReader:
         is_current_callback: Callable[[], bool] | None = None,
         packet_callback: Callable[[FramePacket], bool | None] | None = None,
         failure_log_callback: Callable[[Exception, StreamState], bool | None] | None = None,
+        wait_for_initial_processing: bool = False,
         clock: Callable[[], float] = perf_counter,
     ) -> None:
         self.stream_id = stream_id
@@ -88,6 +89,7 @@ class VideoReader:
         self.is_current_callback = is_current_callback
         self.packet_callback = packet_callback
         self.failure_log_callback = failure_log_callback
+        self.wait_for_initial_processing = wait_for_initial_processing
         self._clock = clock
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -178,6 +180,14 @@ class VideoReader:
                 return False
         return False
 
+    def _wait_for_processing(self, complete: threading.Event) -> bool:
+        while not complete.is_set():
+            if not self._is_current():
+                return False
+            if self._stop_event.wait(0.05):
+                return False
+        return self._is_current() and not self._stop_event.is_set()
+
     def _run(self) -> None:
         frame_index = 0
         attempt = 0
@@ -249,7 +259,8 @@ class VideoReader:
                     )
                     if self.source.source_type is SourceType.LOCAL:
                         if playback_origin is None:
-                            playback_origin = self._clock() - target_seconds
+                            if not self.wait_for_initial_processing:
+                                playback_origin = self._clock() - target_seconds
                         elif not self._wait_for_local_presentation(
                             playback_origin=playback_origin,
                             target_seconds=target_seconds,
@@ -263,9 +274,24 @@ class VideoReader:
                         captured_at=self._clock(),
                         runtime_generation=self.runtime_generation,
                         source_timestamp_ms=timestamp,
+                        # The first real prediction can still initialize source-shaped
+                        # predictor state after the generic detector warmup.
+                        processing_complete=(
+                            threading.Event()
+                            if self.source.source_type is SourceType.LOCAL
+                            and self.wait_for_initial_processing
+                            and playback_origin is None
+                            else None
+                        ),
                     )
                     if not self._emit_packet(packet):
                         return
+                    if packet.processing_complete is not None:
+                        if not self._wait_for_processing(packet.processing_complete):
+                            break
+                        # Start media time after frame zero has actually been published,
+                        # so the latest-only queue cannot enter catch-up mode at startup.
+                        playback_origin = self._clock() - target_seconds
                     frame_index += 1
             except Exception as exc:
                 if self._stop_event.is_set():

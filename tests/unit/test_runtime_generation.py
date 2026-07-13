@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from vision_track.configuration import load_config
-from vision_track.context import StreamContext
+from vision_track.context import StreamContext, StreamOptions
 from vision_track.detections import Detections
 from vision_track.detector import DetectorBackend, InferenceResult
 from vision_track.device import DeviceInfo
@@ -179,6 +179,28 @@ class ImmediateDetector(DetectorBackend):
         return [_result("immediate", "cpu") for _frame in frames]
 
 
+class BlockingPreparationDetector(ImmediateDetector):
+    def __init__(self) -> None:
+        super().__init__()
+        self.load_calls = 0
+        self.warmup_calls = 0
+        self.warmup_started = threading.Event()
+        self.release_warmup = threading.Event()
+
+    def load(self) -> None:
+        self.load_calls += 1
+
+    def warmup(self) -> None:
+        self.warmup_calls += 1
+        self.warmup_started.set()
+        self.release_warmup.wait(timeout=2.0)
+
+
+class FailingPreparationDetector(ImmediateDetector):
+    def load(self) -> None:
+        raise RuntimeError("test detector load failure")
+
+
 def _result(backend: str, device: str) -> InferenceResult:
     return InferenceResult(
         detections=Detections([[0, 0, 2, 2]], [0.9], [0]),
@@ -261,6 +283,135 @@ def test_current_generation_state_callback_applies_normally(tmp_path: Path) -> N
     try:
         assert reader.state_callback(StreamState.ACTIVE) is True
         assert context.state is StreamState.ACTIVE
+    finally:
+        engine.shutdown()
+
+
+def test_detection_start_waits_for_async_detector_readiness_and_reuses_warmup(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    detector = BlockingPreparationDetector()
+    engine = _engine(tmp_path, detector)
+    stream_id = engine.add_stream("cold-start.mp4")
+    context = engine.get(stream_id)
+    readers: list[NoopReader] = []
+
+    def build_reader(_context: StreamContext) -> NoopReader:
+        reader = NoopReader()
+        readers.append(reader)
+        return reader
+
+    monkeypatch.setattr(engine, "_build_reader", build_reader)
+    start_returned = threading.Event()
+    start_thread = threading.Thread(
+        target=lambda: (engine.start(stream_id), start_returned.set()),
+        daemon=True,
+    )
+    try:
+        start_thread.start()
+        assert start_returned.wait(timeout=0.5)
+        assert detector.warmup_started.wait(timeout=2.0)
+        assert context.state is StreamState.PREPARING
+        assert readers == []
+        assert not engine.scheduler.running
+
+        engine.start(stream_id)
+        assert detector.load_calls == 1
+        assert detector.warmup_calls == 1
+        assert readers == []
+
+        detector.release_warmup.set()
+        assert _wait_until(lambda: len(readers) == 1 and readers[0].started)
+        assert engine.scheduler.detector_ready
+        assert detector.load_calls == 1
+        assert detector.warmup_calls == 1
+
+        engine.restart(stream_id)
+
+        assert len(readers) == 2
+        assert readers[1].started
+        assert detector.load_calls == 1
+        assert detector.warmup_calls == 1
+    finally:
+        detector.release_warmup.set()
+        start_thread.join(timeout=2.0)
+        engine.shutdown()
+
+
+def test_stop_during_detector_preparation_does_not_start_stale_reader(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    detector = BlockingPreparationDetector()
+    engine = _engine(tmp_path, detector)
+    stream_id = engine.add_stream("stopped-during-prepare.mp4")
+    context = engine.get(stream_id)
+    readers: list[NoopReader] = []
+    monkeypatch.setattr(
+        engine,
+        "_build_reader",
+        lambda _context: readers.append(NoopReader()) or readers[-1],
+    )
+    try:
+        engine.start(stream_id)
+        assert detector.warmup_started.wait(timeout=2.0)
+        assert context.state is StreamState.PREPARING
+
+        engine.stop(stream_id)
+        detector.release_warmup.set()
+        assert _wait_until(lambda: engine.scheduler.detector_ready)
+
+        assert context.state is StreamState.STOPPED
+        assert readers == []
+    finally:
+        detector.release_warmup.set()
+        engine.shutdown()
+
+
+def test_detection_disabled_start_does_not_wait_for_detector_preparation(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    detector = BlockingPreparationDetector()
+    engine = _engine(tmp_path, detector)
+    stream_id = engine.add_stream(
+        "detection-disabled.mp4",
+        options=StreamOptions(detection_enabled=False),
+    )
+    reader = NoopReader()
+    monkeypatch.setattr(engine, "_build_reader", lambda _context: reader)
+    try:
+        engine.start(stream_id)
+
+        assert reader.started
+        assert not detector.warmup_started.is_set()
+        assert detector.load_calls == 0
+        assert detector.warmup_calls == 0
+    finally:
+        detector.release_warmup.set()
+        engine.shutdown()
+
+
+def test_detector_preparation_failure_sets_failed_status_without_reader(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path, FailingPreparationDetector())
+    stream_id = engine.add_stream("preparation-failure.mp4")
+    context = engine.get(stream_id)
+    reader_built = threading.Event()
+    monkeypatch.setattr(
+        engine,
+        "_build_reader",
+        lambda _context: reader_built.set() or NoopReader(),
+    )
+    try:
+        engine.start(stream_id)
+        assert _wait_until(lambda: context.state is StreamState.FAILED)
+
+        assert "Detector preparation failed" in (context.error or "")
+        assert not reader_built.is_set()
     finally:
         engine.shutdown()
 
@@ -703,7 +854,9 @@ def test_current_generation_packet_finalizes_normally(monkeypatch) -> None:
     )
     context.tracker = RecordingTracker()
     context.counter = RecordingCounter()
-    context.queue.put(_packet(context.runtime_generation))
+    packet = _packet(context.runtime_generation)
+    packet.processing_complete = threading.Event()
+    context.queue.put(packet)
     scheduler = SharedInferenceScheduler(
         ImmediateDetector(),
         lambda: [context],
@@ -720,6 +873,7 @@ def test_current_generation_packet_finalizes_normally(monkeypatch) -> None:
         assert context.actual_backend == "immediate"
         assert context.tracker.calls == 1
         assert context.counter.calls == 1
+        assert packet.processing_complete.is_set()
     finally:
         scheduler.stop()
 
@@ -746,6 +900,9 @@ def test_replay_resets_runtime_and_accepts_only_new_generation_packets(
     context.counter.in_count = 3
     try:
         engine.start(stream_id)
+        assert _wait_until(
+            lambda: context.reader is not None and context.reader.started
+        )
         context.force_state(StreamState.ACTIVE)
         context.tracker = RecordingTracker()
         context.counter = RecordingCounter()

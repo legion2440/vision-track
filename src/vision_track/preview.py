@@ -667,8 +667,8 @@ def build_preview_component_html(
 <head>
 <meta charset="utf-8">
 <style>
-html, body {{ margin: 0; padding: 0; background: #000; overflow: hidden; }}
-#preview {{ position: relative; width: 100%; aspect-ratio: 16 / 9; background: #000; }}
+html, body {{ width: 100%; height: 100%; margin: 0; padding: 0; background: #000; overflow: hidden; }}
+#preview {{ position: relative; width: 100%; height: 100%; background: #000; }}
 canvas {{ display: block; width: 100%; height: 100%; background: #000; }}
 #status {{
   position: absolute; inset: auto 0 0 0; padding: 8px 12px;
@@ -704,6 +704,40 @@ canvas {{ display: block; width: 100%; height: 100%; background: #000; }}
 
   function setStatus(message) {{ status.textContent = message || ""; }}
 
+  function resizeCanvasToDisplaySize() {{
+    const bounds = canvas.getBoundingClientRect();
+    const pixelRatio = window.devicePixelRatio || 1;
+    const displayWidth = Math.max(1, Math.round(bounds.width * pixelRatio));
+    const displayHeight = Math.max(1, Math.round(bounds.height * pixelRatio));
+    if (canvas.width !== displayWidth || canvas.height !== displayHeight) {{
+      canvas.width = displayWidth;
+      canvas.height = displayHeight;
+    }}
+    canvas.dataset.canvasWidth = String(displayWidth);
+    canvas.dataset.canvasHeight = String(displayHeight);
+  }}
+
+  function drawBitmapContained(bitmap) {{
+    resizeCanvasToDisplaySize();
+    context.fillStyle = "#000";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    const scale = Math.min(
+      canvas.width / bitmap.width,
+      canvas.height / bitmap.height,
+    );
+    const drawWidth = bitmap.width * scale;
+    const drawHeight = bitmap.height * scale;
+    const drawX = (canvas.width - drawWidth) / 2;
+    const drawY = (canvas.height - drawHeight) / 2;
+    context.drawImage(bitmap, drawX, drawY, drawWidth, drawHeight);
+    canvas.dataset.sourceWidth = String(bitmap.width);
+    canvas.dataset.sourceHeight = String(bitmap.height);
+    canvas.dataset.drawX = String(drawX);
+    canvas.dataset.drawY = String(drawY);
+    canvas.dataset.drawWidth = String(drawWidth);
+    canvas.dataset.drawHeight = String(drawHeight);
+  }}
+
   function renderState(state, error) {{
     latestState = state;
     latestError = error;
@@ -718,6 +752,7 @@ canvas {{ display: block; width: 100%; height: 100%; background: #000; }}
   function clearCanvas() {{
     decodeGeneration += 1;
     pendingJpeg = null;
+    resizeCanvasToDisplaySize();
     context.fillStyle = "#000";
     context.fillRect(0, 0, canvas.width, canvas.height);
     canvasHasFrame = false;
@@ -735,7 +770,7 @@ canvas {{ display: block; width: 100%; height: 100%; background: #000; }}
         const bitmap = await createImageBitmap(new Blob([payload], {{ type: "image/jpeg" }}));
         try {{
           if (generation !== decodeGeneration) continue;
-          context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+          drawBitmapContained(bitmap);
           canvasHasFrame = true;
           canvas.dataset.hasFrame = "true";
           drawnFrameCount += 1;

@@ -337,7 +337,6 @@ def render_detail_controls(stream_id: str) -> None:
         engine.reset_counters(stream_id)
 
 
-@st.fragment(run_every=0.25)
 def render_stream_metrics_card(stream_id: str) -> None:
     try:
         snapshot = snapshot_stream_metrics(engine.get(stream_id))
@@ -348,7 +347,6 @@ def render_stream_metrics_card(stream_id: str) -> None:
         st.error(snapshot.error)
 
 
-@st.fragment(run_every=0.25)
 def render_detail_metrics(
     stream_id: str,
     requested_backend: str,
@@ -383,6 +381,36 @@ def render_detail_metrics(
         st.error(snapshot.error)
 
 
+# Keep stream metrics in a single 4 Hz fragment.
+# Multiple fragments or an 8 Hz combined rerun rate caused sustained
+# CUDA inference degradation on Windows: ~30 ms -> 2–3 s per forward.
+@st.fragment(run_every=0.25)
+def render_metrics_dashboard(
+    stream_ids: tuple[str, ...],
+    selected_stream_id: str | None,
+    selected_display_name: str | None,
+    requested_backend: str,
+    requested_device: str,
+) -> None:
+    if len(stream_ids) == 1:
+        _, middle, _ = st.columns(single_stream_column_weights(1))
+        metric_columns = [middle]
+    else:
+        metric_columns = st.columns(stream_grid_columns(len(stream_ids)))
+
+    for index, stream_id in enumerate(stream_ids):
+        with metric_columns[index % len(metric_columns)]:
+            render_stream_metrics_card(stream_id)
+
+    if selected_stream_id and selected_display_name:
+        st.subheader(f"Details · {selected_display_name}")
+        render_detail_metrics(
+            selected_stream_id,
+            requested_backend,
+            requested_device,
+        )
+
+
 dashboard_identities = identities
 dashboard_stream_ids = [identity.stream_id for identity in dashboard_identities]
 dashboard_requested_backend = engine.detector.name
@@ -410,15 +438,18 @@ else:
                 height=330,
                 scrolling=False,
             )
-            render_stream_metrics_card(identity.stream_id)
 
-    if selected_id and selected_id in dashboard_stream_ids:
-        detail_identity = identity_by_id.get(selected_id)
-        if detail_identity is not None:
-            st.subheader(f"Details · {detail_identity.display_name}")
-            render_detail_metrics(
-                selected_id,
-                dashboard_requested_backend,
-                dashboard_requested_device,
-            )
-            render_detail_controls(selected_id)
+    detail_identity = (
+        identity_by_id.get(selected_id)
+        if selected_id and selected_id in dashboard_stream_ids
+        else None
+    )
+    render_metrics_dashboard(
+        tuple(dashboard_stream_ids),
+        detail_identity.stream_id if detail_identity is not None else None,
+        detail_identity.display_name if detail_identity is not None else None,
+        dashboard_requested_backend,
+        dashboard_requested_device,
+    )
+    if detail_identity is not None:
+        render_detail_controls(detail_identity.stream_id)

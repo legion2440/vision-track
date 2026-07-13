@@ -5,6 +5,7 @@ import queue
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import Future
 
 from .context import StreamContext
 from .detections import Detections
@@ -36,6 +37,11 @@ class SharedInferenceScheduler:
         self._thread: threading.Thread | None = None
         self._loaded = False
         self._lock = threading.Lock()
+        self._detector_ready = threading.Event()
+        self._detector_load_lock = threading.Lock()
+        self._preparation_lock = threading.Lock()
+        self._preparation_future: Future[None] | None = None
+        self._preparation_thread: threading.Thread | None = None
         self._cursor = 0
 
     @property
@@ -61,11 +67,56 @@ class SharedInferenceScheduler:
             thread.join(timeout=timeout)
 
     def _load_detector(self) -> None:
-        if self._loaded:
+        if self._detector_ready.is_set():
             return
-        self.detector.load()
-        self.detector.warmup()
-        self._loaded = True
+        with self._detector_load_lock:
+            if self._detector_ready.is_set():
+                return
+            self.detector.load()
+            self.detector.warmup()
+            self._loaded = True
+            self._detector_ready.set()
+
+    @property
+    def detector_ready(self) -> bool:
+        return self._detector_ready.is_set()
+
+    @staticmethod
+    def _completed_preparation() -> Future[None]:
+        future: Future[None] = Future()
+        future.set_result(None)
+        return future
+
+    def prepare_detector(self) -> Future[None]:
+        """Prepare the shared detector once without blocking the caller."""
+        if self.detector_ready:
+            return self._completed_preparation()
+        with self._preparation_lock:
+            if self.detector_ready:
+                return self._completed_preparation()
+            if (
+                self._preparation_future is not None
+                and not self._preparation_future.done()
+            ):
+                return self._preparation_future
+            future: Future[None] = Future()
+            self._preparation_future = future
+            self._preparation_thread = threading.Thread(
+                target=self._prepare_detector,
+                args=(future,),
+                name="vision-detector-prepare",
+                daemon=True,
+            )
+            self._preparation_thread.start()
+            return future
+
+    def _prepare_detector(self, future: Future[None]) -> None:
+        try:
+            self._load_detector()
+        except Exception as exc:
+            future.set_exception(exc)
+        else:
+            future.set_result(None)
 
     def _take_batch(self) -> list[tuple[StreamContext, FramePacket]]:
         contexts = self.contexts_provider()
@@ -275,3 +326,8 @@ class SharedInferenceScheduler:
                         exc=exc,
                     )
                 self._stop_event.wait(0.25)
+            finally:
+                # Never strand a local reader if inference or finalization failed.
+                for _context, packet in batch:
+                    if packet.processing_complete is not None:
+                        packet.processing_complete.set()

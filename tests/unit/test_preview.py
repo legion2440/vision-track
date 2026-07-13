@@ -417,6 +417,26 @@ def test_preview_html_has_one_canvas_and_no_live_image_element() -> None:
     assert 'width="960" height="540"' in html
 
 
+def test_preview_html_fills_iframe_and_draws_jpeg_contained() -> None:
+    html = build_preview_component_html(
+        port=4321,
+        session_token="token",
+        stream_id="stream-1",
+    )
+
+    assert "aspect-ratio: 16 / 9" not in html
+    assert "#preview { position: relative; width: 100%; height: 100%" in html
+    assert "const bounds = canvas.getBoundingClientRect();" in html
+    assert "const scale = Math.min(" in html
+    assert "canvas.width / bitmap.width" in html
+    assert "canvas.height / bitmap.height" in html
+    assert "const drawX = (canvas.width - drawWidth) / 2;" in html
+    assert "const drawY = (canvas.height - drawHeight) / 2;" in html
+    assert "context.fillRect(0, 0, canvas.width, canvas.height);" in html
+    assert "context.drawImage(bitmap, drawX, drawY, drawWidth, drawHeight);" in html
+    assert "context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);" not in html
+
+
 def test_preview_html_encodes_path_and_guards_reconnect_and_decode_order() -> None:
     html = build_preview_component_html(
         port=4321,

@@ -133,7 +133,7 @@ def replay_button_label(control: StreamControlSnapshot) -> str:
     return "Restart"
 
 
-def fit_frame_to_canvas(frame: np.ndarray) -> np.ndarray:
+def _resize_frame_to_preview_bounds(frame: np.ndarray) -> np.ndarray:
     if not isinstance(frame, np.ndarray):
         raise ValueError("Frame must be a numpy array")
     if frame.dtype != np.uint8:
@@ -153,6 +153,12 @@ def fit_frame_to_canvas(frame: np.ndarray) -> np.ndarray:
         (resized_width, resized_height),
         interpolation=interpolation,
     )
+    return np.ascontiguousarray(resized)
+
+
+def fit_frame_to_canvas(frame: np.ndarray) -> np.ndarray:
+    resized = _resize_frame_to_preview_bounds(frame)
+    resized_height, resized_width = resized.shape[:2]
 
     canvas = np.zeros((UI_CANVAS_HEIGHT, UI_CANVAS_WIDTH, 3), dtype=np.uint8)
     x_offset = (UI_CANVAS_WIDTH - resized_width) // 2
@@ -165,10 +171,10 @@ def fit_frame_to_canvas(frame: np.ndarray) -> np.ndarray:
 
 
 def encode_frame_jpeg(frame: np.ndarray) -> bytes:
-    canvas = fit_frame_to_canvas(frame)
+    resized = _resize_frame_to_preview_bounds(frame)
     ok, encoded = cv2.imencode(
         ".jpg",
-        canvas,
+        resized,
         [int(cv2.IMWRITE_JPEG_QUALITY), UI_JPEG_QUALITY],
     )
     if not ok:

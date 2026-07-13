@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import queue
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from time import perf_counter
 
 import numpy as np
@@ -15,6 +15,11 @@ class FramePacket:
     captured_at: float
     runtime_generation: int = 0
     source_timestamp_ms: float | None = None
+    processing_complete: threading.Event | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     @classmethod
     def create(

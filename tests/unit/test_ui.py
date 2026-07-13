@@ -315,6 +315,16 @@ def test_encode_frame_jpeg_returns_decodable_bytes() -> None:
     assert decoded.shape == (UI_CANVAS_HEIGHT, UI_CANVAS_WIDTH, 3)
 
 
+def test_encode_frame_jpeg_preserves_vertical_aspect_ratio() -> None:
+    frame = np.full((1280, 720, 3), 120, dtype=np.uint8)
+
+    payload = encode_frame_jpeg(frame)
+    decoded = cv2.imdecode(np.frombuffer(payload, dtype=np.uint8), cv2.IMREAD_COLOR)
+
+    assert decoded is not None
+    assert decoded.shape == (UI_CANVAS_HEIGHT, 304, 3)
+
+
 def test_metrics_snapshot_does_not_access_frame_encoder(monkeypatch) -> None:
     context = StreamContext("stream-1", VideoSource.from_uri("video.mp4"))
     context.force_state(StreamState.ACTIVE)

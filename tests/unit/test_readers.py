@@ -119,6 +119,8 @@ def _run_reader(
     capture: FakeCapture,
     *,
     interrupt_on_wait: bool = False,
+    initial_processing_delay: float | None = None,
+    wait_for_initial_processing: bool = False,
     logger: logging.Logger | None = None,
 ):
     import vision_track.readers as readers
@@ -130,6 +132,17 @@ def _run_reader(
     errors: list[str | None] = []
     queue = RecordingQueue()
     clock = FakeClock()
+
+    def packet_callback(packet) -> bool:
+        queue.put(packet)
+        if (
+            packet.processing_complete is not None
+            and initial_processing_delay is not None
+        ):
+            clock.advance(initial_processing_delay)
+            packet.processing_complete.set()
+        return True
+
     reader = VideoReader(
         stream_id="stream-1",
         source=VideoSource.from_uri(str(source_path)),
@@ -137,6 +150,8 @@ def _run_reader(
         state_callback=states.append,
         error_callback=errors.append,
         logger=logger or logging.getLogger("test"),
+        packet_callback=packet_callback,
+        wait_for_initial_processing=wait_for_initial_processing,
         clock=clock,
     )
     stop_event = FakeStopEvent(clock, interrupt_on_wait=interrupt_on_wait)
@@ -157,6 +172,44 @@ def test_local_video_playback_is_paced_from_media_timestamps(monkeypatch, tmp_pa
     assert queue.packets[2].captured_at == 11.0
     assert queue.packets[2].source_timestamp_ms == 1000.0
     assert stop_event.waits
+
+
+def test_local_playback_reanchors_after_initial_frame_processing(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    capture = FakeCapture(frames=3, timestamps=[0.0, 500.0, 1000.0], fps=60.0)
+    queue, states, errors, _ = _run_reader(
+        monkeypatch,
+        tmp_path,
+        capture,
+        initial_processing_delay=2.0,
+        wait_for_initial_processing=True,
+    )
+
+    assert states[-1] is StreamState.EOF
+    assert errors == [None]
+    assert [packet.frame_index for packet in queue.packets] == [0, 1, 2]
+    assert [packet.captured_at for packet in queue.packets] == [10.0, 12.5, 13.0]
+    assert queue.packets[0].processing_complete is not None
+    assert all(packet.processing_complete is None for packet in queue.packets[1:])
+
+
+def test_stop_while_waiting_for_initial_processing_is_interruptible(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    capture = FakeCapture(frames=3, timestamps=[0.0, 500.0, 1000.0], fps=60.0)
+    queue, states, _, _ = _run_reader(
+        monkeypatch,
+        tmp_path,
+        capture,
+        interrupt_on_wait=True,
+        wait_for_initial_processing=True,
+    )
+
+    assert len(queue.packets) == 1
+    assert states[-1] is StreamState.STOPPED
 
 
 def test_invalid_local_fps_falls_back_to_30fps(monkeypatch, tmp_path) -> None:

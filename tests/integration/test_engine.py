@@ -122,8 +122,8 @@ def test_start_after_eof_replays_from_clean_state(fake_engine, synthetic_video: 
 
     fake_engine.start(stream_id)
 
-    assert reader.started
-    assert context.state is StreamState.CREATED
+    assert wait_until(lambda: reader.started)
+    assert context.state is StreamState.PREPARING
     assert context.queue.received == 0
     assert context.metrics.processed_frames == 0
     assert context.latest_frame is None
