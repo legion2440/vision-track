@@ -4,6 +4,7 @@ import logging
 import math
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 from vision_track.lifecycle import StreamState
@@ -423,6 +424,7 @@ def _run_webcam_reader(
     reconnect_attempts: int,
     wait_for_initial_processing: bool = False,
     clock: FakeClock | None = None,
+    backend_preferences: tuple[int, ...] = (10, 20, 30),
 ):
     import vision_track.readers as readers
 
@@ -431,10 +433,12 @@ def _run_webcam_reader(
     queue = RecordingQueue()
     clock = clock or FakeClock()
     open_calls: list[int] = []
+    backend_calls: list[tuple[int, ...]] = []
     pending = list(opened_results)
 
     def fake_open_webcam(index: int, **kwargs) -> OpenedWebcam:
         open_calls.append(index)
+        backend_calls.append(tuple(kwargs["backends"]))
         result = pending.pop(0)
         if isinstance(result, Exception):
             raise result
@@ -442,6 +446,11 @@ def _run_webcam_reader(
         return result
 
     monkeypatch.setattr(readers, "open_webcam", fake_open_webcam)
+    monkeypatch.setattr(
+        readers,
+        "webcam_backend_preferences",
+        lambda: backend_preferences,
+    )
     reader = VideoReader(
         stream_id="camera-stream",
         source=VideoSource.webcam(2),
@@ -457,15 +466,21 @@ def _run_webcam_reader(
     stop_event = FakeStopEvent(clock)
     reader._stop_event = stop_event
     reader._run()
-    return queue, states, errors, stop_event, open_calls
+    return queue, states, errors, stop_event, open_calls, backend_calls
 
 
-def _opened_webcam(capture: FakeCapture, *, value: int, captured_at: float) -> OpenedWebcam:
+def _opened_webcam(
+    capture: FakeCapture,
+    *,
+    value: int,
+    captured_at: float,
+    backend: int = 10,
+) -> OpenedWebcam:
     return OpenedWebcam(
         capture=capture,
         first_frame=np.full((4, 4, 3), value, dtype=np.uint8),
         captured_at=captured_at,
-        backend=0,
+        backend=backend,
     )
 
 
@@ -505,7 +520,7 @@ def test_webcam_preserves_validated_first_frame_and_has_no_local_barrier(
 ) -> None:
     capture = FakeCapture(frames=1, timestamps=[0.0], fps=30.0)
     capture.index = 1
-    queue, states, errors, stop_event, open_calls = _run_webcam_reader(
+    queue, states, errors, stop_event, open_calls, _ = _run_webcam_reader(
         monkeypatch,
         [_opened_webcam(capture, value=9, captured_at=7.5)],
         reconnect_attempts=0,
@@ -525,7 +540,7 @@ def test_webcam_preserves_validated_first_frame_and_has_no_local_barrier(
     assert capture.released
 
 
-def test_webcam_uses_three_consecutive_read_failures_before_reconnect(
+def test_unstable_msmf_reconnect_starts_with_dshow(
     monkeypatch,
 ) -> None:
     first = FakeCapture(frames=1, timestamps=[0.0], fps=30.0)
@@ -533,16 +548,31 @@ def test_webcam_uses_three_consecutive_read_failures_before_reconnect(
     second = FakeCapture(frames=1, timestamps=[0.0], fps=30.0)
     second.index = 1
 
-    queue, states, _, stop_event, open_calls = _run_webcam_reader(
+    queue, states, _, stop_event, open_calls, backend_calls = _run_webcam_reader(
         monkeypatch,
         [
-            _opened_webcam(first, value=1, captured_at=10.0),
-            _opened_webcam(second, value=2, captured_at=10.5),
+            _opened_webcam(
+                first,
+                value=1,
+                captured_at=10.0,
+                backend=cv2.CAP_MSMF,
+            ),
+            _opened_webcam(
+                second,
+                value=2,
+                captured_at=10.5,
+                backend=cv2.CAP_DSHOW,
+            ),
         ],
         reconnect_attempts=1,
+        backend_preferences=(cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY),
     )
 
     assert open_calls == [2, 2]
+    assert backend_calls == [
+        (cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY),
+        (cv2.CAP_DSHOW, cv2.CAP_ANY),
+    ]
     assert [int(packet.frame[0, 0, 0]) for packet in queue.packets] == [1, 2]
     assert states.count(StreamState.RECONNECTING) == 1
     assert states[-1] is StreamState.FAILED
@@ -551,13 +581,14 @@ def test_webcam_uses_three_consecutive_read_failures_before_reconnect(
 
 
 def test_webcam_open_failures_exhaust_bounded_reconnect_budget(monkeypatch) -> None:
-    _, states, errors, _, open_calls = _run_webcam_reader(
+    _, states, errors, _, open_calls, backend_calls = _run_webcam_reader(
         monkeypatch,
         [OSError("one"), OSError("two"), OSError("three")],
         reconnect_attempts=2,
     )
 
     assert open_calls == [2, 2, 2]
+    assert backend_calls == [(10, 20, 30)] * 3
     assert states == [
         StreamState.CONNECTING,
         StreamState.RECONNECTING,
@@ -583,7 +614,7 @@ def test_webcam_stable_connection_resets_budget_in_reader_loop(monkeypatch) -> N
     final_capture = FakeCapture(frames=1, timestamps=[0.0], fps=30.0)
     final_capture.index = 1
 
-    queue, states, _, _, open_calls = _run_webcam_reader(
+    queue, states, _, _, open_calls, backend_calls = _run_webcam_reader(
         monkeypatch,
         [
             OSError("initial open failed"),
@@ -591,7 +622,7 @@ def test_webcam_stable_connection_resets_budget_in_reader_loop(monkeypatch) -> N
                 capture=stable_capture,
                 first_frame=np.zeros((4, 4, 3), dtype=np.uint8),
                 captured_at=10.0,
-                backend=0,
+                backend=10,
             ),
             _opened_webcam(final_capture, value=7, captured_at=13.02),
         ],
@@ -600,10 +631,68 @@ def test_webcam_stable_connection_resets_budget_in_reader_loop(monkeypatch) -> N
     )
 
     assert open_calls == [2, 2, 2]
+    assert backend_calls == [(10, 20, 30)] * 3
     assert states.count(StreamState.RECONNECTING) == 2
     assert states[-1] is StreamState.FAILED
     assert len(queue.packets) == 31
     assert stable_capture.released and final_capture.released
+
+
+def test_stable_fallback_backend_restores_standard_order(monkeypatch) -> None:
+    clock = FakeClock()
+    unstable_msmf = ScriptedWebcamCapture(
+        clock,
+        [(False, 0.0)] * 3,
+    )
+    stable_dshow = ScriptedWebcamCapture(
+        clock,
+        [(True, 3.0 / 29)] * 29 + [(False, 0.0)] * 3,
+    )
+    final_msmf = ScriptedWebcamCapture(
+        clock,
+        [(False, 0.0)] * 3,
+    )
+    preferences = (cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY)
+
+    queue, states, _, _, open_calls, backend_calls = _run_webcam_reader(
+        monkeypatch,
+        [
+            OpenedWebcam(
+                capture=unstable_msmf,
+                first_frame=np.zeros((4, 4, 3), dtype=np.uint8),
+                captured_at=10.0,
+                backend=cv2.CAP_MSMF,
+            ),
+            OpenedWebcam(
+                capture=stable_dshow,
+                first_frame=np.zeros((4, 4, 3), dtype=np.uint8),
+                captured_at=10.02,
+                backend=cv2.CAP_DSHOW,
+            ),
+            OpenedWebcam(
+                capture=final_msmf,
+                first_frame=np.zeros((4, 4, 3), dtype=np.uint8),
+                captured_at=13.04,
+                backend=cv2.CAP_MSMF,
+            ),
+        ],
+        reconnect_attempts=1,
+        clock=clock,
+        backend_preferences=preferences,
+    )
+
+    assert open_calls == [2, 2, 2]
+    assert backend_calls == [
+        preferences,
+        (cv2.CAP_DSHOW, cv2.CAP_ANY),
+        preferences,
+    ]
+    assert states.count(StreamState.RECONNECTING) == 2
+    assert states[-1] is StreamState.FAILED
+    assert len(queue.packets) == 32
+    assert unstable_msmf.released
+    assert stable_dshow.released
+    assert final_msmf.released
 
 
 def test_webcam_transient_read_failure_restarts_stability_window(
@@ -617,7 +706,7 @@ def test_webcam_transient_read_failure_restarts_stability_window(
         + [(False, 0.0)] * 3,
     )
 
-    _, states, _, _, open_calls = _run_webcam_reader(
+    _, states, _, _, open_calls, backend_calls = _run_webcam_reader(
         monkeypatch,
         [
             OSError("initial open failed"),
@@ -625,7 +714,7 @@ def test_webcam_transient_read_failure_restarts_stability_window(
                 capture=capture,
                 first_frame=np.zeros((4, 4, 3), dtype=np.uint8),
                 captured_at=10.0,
-                backend=0,
+                backend=10,
             ),
             AssertionError("unstable connection must not regain reconnect budget"),
         ],
@@ -634,6 +723,7 @@ def test_webcam_transient_read_failure_restarts_stability_window(
     )
 
     assert open_calls == [2, 2]
+    assert backend_calls == [(10, 20, 30)] * 2
     assert states.count(StreamState.RECONNECTING) == 1
     assert states[-1] is StreamState.FAILED
     assert capture.released

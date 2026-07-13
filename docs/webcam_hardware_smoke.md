@@ -57,7 +57,7 @@ Use `PASS`, `FAIL`, or `BLOCKED` and add concrete evidence for every row.
 | NOT RUN | Bounded failure | Keep the device unavailable. Reconnect attempts stop after the configured limit and the stream reaches `FAILED`; it does not loop forever. | |
 | NOT RUN | Stable budget reset | After one reconnect, keep the camera healthy for at least 30 consecutive frames and at least 3 seconds, then disconnect it again. A fresh reconnect budget is available. | |
 | NOT RUN | Unstable budget retained | Reconnect for fewer than 30 frames or fewer than 3 seconds, or inject an intervening read failure, then disconnect again. The previous failures still count toward the limit. | |
-| NOT RUN | Backend fallback | On hardware where MSMF opens but cannot deliver a frame, DSHOW is tried and succeeds only after its first frame is read. Record the selected backend. | |
+| NOT RUN | Backend fallback | On hardware where MSMF or DSHOW opens but cannot deliver a frame, the next backend is tried in MSMF → DSHOW → CAP_ANY order and succeeds only after its first frame is read. Record the selected backend. | |
 | NOT RUN | Mixed sources | Run webcam, local file, HTTP, and RTSP streams together. All four continue publishing independently through the shared scheduler; one failure does not stop the others. | |
 | NOT RUN | Queue freshness | Under detector load, dropped-frame metrics may rise but end-to-end latency remains bounded; there is no growing backlog or delayed playback catch-up. | |
 | NOT RUN | Stop during load | Stop/restart the camera while inference or rendering is busy. Controls and metrics remain responsive. The cached last preview may remain during restart, but an old-generation render never overwrites a newer frame afterward. | |

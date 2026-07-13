@@ -14,7 +14,7 @@ from .lifecycle import StreamState
 from .logging_utils import log_stream_error
 from .queues import FramePacket, LatestFrameQueue
 from .sources import SourceType, VideoSource
-from .webcams import open_webcam
+from .webcams import open_webcam, webcam_backend_preferences
 
 
 DEFAULT_LOCAL_FPS = 30.0
@@ -112,6 +112,8 @@ class VideoReader:
         self._thread: threading.Thread | None = None
         self._capture: cv2.VideoCapture | None = None
         self._prefetched_webcam_frame: tuple[np.ndarray, float] | None = None
+        self._webcam_backend_start_index = 0
+        self._active_webcam_backend: int | None = None
         self._lock = threading.Lock()
 
     @property
@@ -123,6 +125,8 @@ class VideoReader:
             if self.running:
                 return
             self._stop_event.clear()
+            self._webcam_backend_start_index = 0
+            self._active_webcam_backend = None
             self._thread = threading.Thread(
                 target=self._run,
                 name=f"vision-reader-{self.stream_id}",
@@ -143,8 +147,10 @@ class VideoReader:
     def _open(self) -> cv2.VideoCapture:
         self._prefetched_webcam_frame = None
         if self.source.source_type is SourceType.WEBCAM:
+            backend_preferences = webcam_backend_preferences()
             opened = open_webcam(
                 self.source.webcam_index,
+                backends=backend_preferences[self._webcam_backend_start_index :],
                 clock=self._clock,
                 capture_callback=lambda capture: setattr(self, "_capture", capture),
                 cancelled=lambda: self._stop_event.is_set() or not self._is_current(),
@@ -153,6 +159,7 @@ class VideoReader:
                 opened.first_frame,
                 opened.captured_at,
             )
+            self._active_webcam_backend = opened.backend
             return opened.capture
         if self.source.source_type is SourceType.LOCAL and not Path(self.source.uri).is_file():
             raise FileNotFoundError(f"Video file not found: {self.source.safe_uri}")
@@ -242,6 +249,7 @@ class VideoReader:
                 webcam_failures = 0
                 webcam_stable_frames = 0
                 webcam_stable_since: float | None = None
+                webcam_connection_stable = False
                 if not self._is_current():
                     return
                 if not self._emit_error(None):
@@ -295,6 +303,8 @@ class VideoReader:
                                 if self._stop_event.wait(LOCAL_RETRY_WAIT_SECONDS):
                                     break
                                 continue
+                            if not webcam_connection_stable:
+                                self._advance_webcam_backend()
                         raise OSError(
                             f"Decoder/read failure for source: {self.source.safe_uri}"
                         )
@@ -307,12 +317,14 @@ class VideoReader:
                         if webcam_stable_since is None:
                             webcam_stable_since = captured_at
                         webcam_stable_frames += 1
-                        if attempt and _webcam_connection_is_stable(
+                        if _webcam_connection_is_stable(
                             webcam_stable_frames,
                             webcam_stable_since,
                             captured_at,
                         ):
                             attempt = 0
+                            self._webcam_backend_start_index = 0
+                            webcam_connection_stable = True
                     else:
                         timestamp = _valid_timestamp_ms(
                             _safe_capture_value(self._capture, cv2.CAP_PROP_POS_MSEC),
@@ -400,3 +412,17 @@ class VideoReader:
                     self._capture = None
         if self._is_current():
             self._emit_state(StreamState.STOPPED)
+
+    def _advance_webcam_backend(self) -> None:
+        backend = self._active_webcam_backend
+        if backend is None:
+            return
+        preferences = webcam_backend_preferences()
+        try:
+            backend_index = preferences.index(backend)
+        except ValueError:
+            return
+        self._webcam_backend_start_index = max(
+            self._webcam_backend_start_index,
+            backend_index + 1,
+        )

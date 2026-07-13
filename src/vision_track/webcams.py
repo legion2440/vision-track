@@ -24,13 +24,14 @@ class OpenedWebcam:
 def webcam_backend_preferences(platform: str | None = None) -> tuple[int, ...]:
     current_platform = platform or sys.platform
     if current_platform == "win32":
-        return cv2.CAP_MSMF, cv2.CAP_DSHOW
+        return cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY
     return (cv2.CAP_ANY,)
 
 
 def open_webcam(
     device_index: int,
     *,
+    backends: Iterable[int] | None = None,
     clock: Callable[[], float] = perf_counter,
     capture_factory: Callable[[int, int], Any] | None = None,
     capture_callback: Callable[[Any | None], None] | None = None,
@@ -45,7 +46,12 @@ def open_webcam(
     is_cancelled = cancelled or (lambda: False)
     notify_capture = capture_callback or (lambda _capture: None)
 
-    for backend in webcam_backend_preferences():
+    backend_preferences = (
+        tuple(int(backend) for backend in backends)
+        if backends is not None
+        else webcam_backend_preferences()
+    )
+    for backend in backend_preferences:
         if is_cancelled():
             break
         capture = None

@@ -29,18 +29,16 @@ class FakeCapture:
         self.released = True
 
 
-def test_backend_preferences_use_msmf_then_dshow_on_windows() -> None:
+def test_backend_preferences_use_complete_windows_fallback_order() -> None:
     assert webcams.webcam_backend_preferences("win32") == (
         cv2.CAP_MSMF,
         cv2.CAP_DSHOW,
+        cv2.CAP_ANY,
     )
     assert webcams.webcam_backend_preferences("linux") == (cv2.CAP_ANY,)
 
 
-def test_open_webcam_falls_back_after_first_backend_cannot_read(
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(webcams, "webcam_backend_preferences", lambda: (10, 20))
+def test_open_webcam_falls_back_after_first_backend_cannot_read() -> None:
     first = FakeCapture(opened=True, read_ok=False)
     second = FakeCapture(opened=True, read_ok=True, value=8)
     captures = {10: first, 20: second}
@@ -53,6 +51,7 @@ def test_open_webcam_falls_back_after_first_backend_cannot_read(
 
     opened = open_webcam(
         3,
+        backends=(10, 20),
         clock=lambda: 42.5,
         capture_factory=factory,
         capture_callback=callbacks.append,
@@ -69,19 +68,24 @@ def test_open_webcam_falls_back_after_first_backend_cannot_read(
     assert callbacks == [first, None, second]
 
 
-def test_open_webcam_releases_every_failed_backend(monkeypatch) -> None:
-    monkeypatch.setattr(webcams, "webcam_backend_preferences", lambda: (10, 20))
+def test_open_webcam_releases_every_failed_backend() -> None:
     captures = [
         FakeCapture(opened=False, read_ok=False),
+        FakeCapture(opened=True, read_ok=False),
         FakeCapture(opened=True, read_ok=False),
     ]
 
     with pytest.raises(OSError, match="device 2"):
-        open_webcam(2, capture_factory=lambda _index, backend: captures[backend // 10 - 1])
+        open_webcam(
+            2,
+            backends=(10, 20, 30),
+            capture_factory=lambda _index, backend: captures[backend // 10 - 1],
+        )
 
     assert all(capture.released for capture in captures)
     assert captures[0].read_calls == 0
     assert captures[1].read_calls == 1
+    assert captures[2].read_calls == 1
 
 
 def test_open_webcam_cancellation_does_not_try_a_backend(monkeypatch) -> None:
