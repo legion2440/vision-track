@@ -422,7 +422,7 @@ class VideoReader:
             backend_index = preferences.index(backend)
         except ValueError:
             return
-        self._webcam_backend_start_index = max(
-            self._webcam_backend_start_index,
-            backend_index + 1,
+        self._webcam_backend_start_index = min(
+            max(self._webcam_backend_start_index, backend_index + 1),
+            len(preferences) - 1,
         )

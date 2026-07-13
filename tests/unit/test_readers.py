@@ -580,6 +580,42 @@ def test_unstable_msmf_reconnect_starts_with_dshow(
     assert first.released and second.released
 
 
+def test_single_cap_any_backend_is_retried_after_read_failures(
+    monkeypatch,
+) -> None:
+    failed_capture = FakeCapture(frames=1, timestamps=[0.0], fps=30.0)
+    failed_capture.index = 1
+    recovered_capture = FakeCapture(frames=1, timestamps=[0.0], fps=30.0)
+    recovered_capture.index = 1
+
+    queue, states, _, _, open_calls, backend_calls = _run_webcam_reader(
+        monkeypatch,
+        [
+            _opened_webcam(
+                failed_capture,
+                value=1,
+                captured_at=10.0,
+                backend=cv2.CAP_ANY,
+            ),
+            _opened_webcam(
+                recovered_capture,
+                value=2,
+                captured_at=10.5,
+                backend=cv2.CAP_ANY,
+            ),
+        ],
+        reconnect_attempts=1,
+        backend_preferences=(cv2.CAP_ANY,),
+    )
+
+    assert open_calls == [2, 2]
+    assert backend_calls == [(cv2.CAP_ANY,), (cv2.CAP_ANY,)]
+    assert [int(packet.frame[0, 0, 0]) for packet in queue.packets] == [1, 2]
+    assert states.count(StreamState.RECONNECTING) == 1
+    assert states[-1] is StreamState.FAILED
+    assert failed_capture.released and recovered_capture.released
+
+
 def test_webcam_open_failures_exhaust_bounded_reconnect_budget(monkeypatch) -> None:
     _, states, errors, _, open_calls, backend_calls = _run_webcam_reader(
         monkeypatch,
