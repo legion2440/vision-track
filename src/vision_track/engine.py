@@ -5,6 +5,7 @@ import threading
 from concurrent.futures import Future
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 from .configuration import AppConfig, load_config, resolve_project_path
 from .context import StreamContext, StreamOptions
@@ -28,6 +29,23 @@ class StreamRestoreSnapshot:
     options: StreamOptions
     tracker_settings: ByteTrackSettings
     was_running: bool
+
+
+@dataclass(frozen=True)
+class _LatestRenderSnapshot:
+    runtime_generation: int
+    render_state_revision: int
+    render_revision: int
+    source_frame: Any
+    detections: Any
+    trajectories: tuple[tuple[int, tuple[tuple[int, int], ...]], ...]
+    geometry: ZoneGeometry | None
+    in_count: int
+    out_count: int
+    occupancy: int
+    show_detections: bool
+    show_tracking: bool
+    show_counting: bool
 
 
 class ProcessingEngine:
@@ -359,19 +377,35 @@ class ProcessingEngine:
                 return
             context.render_state_revision += 1
             context.counter.reset()
-            self._rerender_latest_locked(context)
+            snapshot = self._snapshot_latest_render_locked(context)
+        if snapshot is not None:
+            self._rerender_latest(context, snapshot)
 
-    def _rerender_latest_locked(self, context: StreamContext) -> bool:
+    @staticmethod
+    def _snapshot_latest_render_locked(
+        context: StreamContext,
+    ) -> _LatestRenderSnapshot | None:
         if context.latest_frame is None or context.latest_detections is None:
-            return False
+            return None
 
         counter = context.counter
         tracker = context.tracker
         options = context.options
-        rendered = render_frame(
-            context.latest_frame,
-            context.latest_detections,
-            trajectories=tracker.trajectories if tracker is not None else {},
+        trajectories = (
+            tuple(
+                (tracker_id, tuple(points))
+                for tracker_id, points in tracker.trajectories.items()
+            )
+            if tracker is not None
+            else ()
+        )
+        return _LatestRenderSnapshot(
+            runtime_generation=context.runtime_generation,
+            render_state_revision=context.render_state_revision,
+            render_revision=context.render_revision,
+            source_frame=context.latest_frame,
+            detections=context.latest_detections,
+            trajectories=trajectories,
             geometry=counter.geometry if counter is not None else None,
             in_count=counter.in_count if counter is not None else 0,
             out_count=counter.out_count if counter is not None else 0,
@@ -380,12 +414,37 @@ class ProcessingEngine:
             show_tracking=options.tracking_enabled,
             show_counting=options.counting_enabled,
         )
-        context.publish_rendered_frame(
-            context.latest_frame,
-            rendered,
-            context.latest_detections,
+
+    @staticmethod
+    def _rerender_latest(
+        context: StreamContext,
+        snapshot: _LatestRenderSnapshot,
+    ) -> bool:
+        rendered = render_frame(
+            snapshot.source_frame,
+            snapshot.detections,
+            trajectories=dict(snapshot.trajectories),
+            geometry=snapshot.geometry,
+            in_count=snapshot.in_count,
+            out_count=snapshot.out_count,
+            occupancy=snapshot.occupancy,
+            show_detections=snapshot.show_detections,
+            show_tracking=snapshot.show_tracking,
+            show_counting=snapshot.show_counting,
         )
-        return True
+        with context.lock:
+            if (
+                snapshot.runtime_generation != context.runtime_generation
+                or snapshot.render_state_revision != context.render_state_revision
+                or snapshot.render_revision != context.render_revision
+            ):
+                return False
+            context.publish_rendered_frame(
+                snapshot.source_frame,
+                rendered,
+                snapshot.detections,
+            )
+            return True
 
     def update_options(self, stream_id: str, **changes) -> None:
         context = self.get(stream_id)

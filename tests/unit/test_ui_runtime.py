@@ -574,7 +574,8 @@ def test_reset_counters_rerenders_current_frame_with_zero_counts(monkeypatch) ->
     frame, rendered_detections, kwargs = calls[0]
     assert frame is raw
     assert rendered_detections is detections
-    assert kwargs["trajectories"] is context.tracker.trajectories
+    assert kwargs["trajectories"] == {1: ((1, 2), (2, 3))}
+    assert kwargs["trajectories"] is not context.tracker.trajectories
     assert kwargs["geometry"] is counter.geometry
     assert kwargs["in_count"] == 0
     assert kwargs["out_count"] == 0
@@ -586,6 +587,172 @@ def test_reset_counters_rerenders_current_frame_with_zero_counts(monkeypatch) ->
     assert context.latest_rendered_frame is rendered
     assert context.latest_rendered_version == (12, 4)
     assert context.render_revision == 4
+
+
+def test_reset_rerender_does_not_block_metrics_or_stop(monkeypatch) -> None:
+    context = _context()
+    engine = _minimal_engine(context)
+    context.counter = FakeCounter()
+    context.tracker = SimpleNamespace(trajectories={})
+    context.reader = FakeReader()
+    context.runtime_generation = 10
+    context.render_revision = 2
+    context.latest_frame = np.full((4, 4, 3), 13, dtype=np.uint8)
+    context.latest_detections = Detections.empty()
+    previous_rendered = np.full((4, 4, 3), 14, dtype=np.uint8)
+    context.latest_rendered_frame = previous_rendered
+    context.latest_rendered_version = (10, 2)
+    render_started = threading.Event()
+    release_render = threading.Event()
+    metrics_finished = threading.Event()
+    stop_finished = threading.Event()
+    reset_finished = threading.Event()
+    snapshots = []
+
+    def blocked_render(*_args, **_kwargs):
+        render_started.set()
+        release_render.wait(timeout=2.0)
+        return np.full((4, 4, 3), 99, dtype=np.uint8)
+
+    monkeypatch.setattr(engine_module, "render_frame", blocked_render)
+    reset_thread = threading.Thread(
+        target=lambda: (engine.reset_counters(context.stream_id), reset_finished.set()),
+        daemon=True,
+    )
+    metrics_thread = threading.Thread(
+        target=lambda: (
+            snapshots.append(snapshot_stream_metrics(context)),
+            metrics_finished.set(),
+        ),
+        daemon=True,
+    )
+    stop_thread = threading.Thread(
+        target=lambda: (engine.stop(context.stream_id), stop_finished.set()),
+        daemon=True,
+    )
+
+    try:
+        reset_thread.start()
+        assert render_started.wait(timeout=1.0)
+        metrics_thread.start()
+        stop_thread.start()
+        assert metrics_finished.wait(timeout=0.5)
+        assert stop_finished.wait(timeout=0.5)
+        assert not reset_finished.is_set()
+    finally:
+        release_render.set()
+        reset_thread.join(timeout=1.0)
+        metrics_thread.join(timeout=1.0)
+        stop_thread.join(timeout=1.0)
+
+    assert snapshots[0].in_count == 0
+    assert snapshots[0].out_count == 0
+    assert snapshots[0].occupancy == 0
+    assert reset_finished.is_set()
+    assert context.latest_rendered_frame is previous_rendered
+    assert context.latest_rendered_version == (10, 2)
+    assert context.render_revision == 2
+
+
+def test_reset_rerender_is_discarded_after_render_state_change(monkeypatch) -> None:
+    context = _context()
+    engine = _minimal_engine(context)
+    context.counter = FakeCounter()
+    context.tracker = SimpleNamespace(trajectories={})
+    context.runtime_generation = 11
+    context.render_revision = 3
+    context.latest_frame = np.full((4, 4, 3), 13, dtype=np.uint8)
+    context.latest_detections = Detections.empty()
+    previous_rendered = np.full((4, 4, 3), 14, dtype=np.uint8)
+    context.latest_rendered_frame = previous_rendered
+    context.latest_rendered_version = (11, 3)
+    render_started = threading.Event()
+    release_render = threading.Event()
+    options_updated = threading.Event()
+
+    def blocked_render(*_args, **_kwargs):
+        render_started.set()
+        release_render.wait(timeout=2.0)
+        return np.full((4, 4, 3), 99, dtype=np.uint8)
+
+    monkeypatch.setattr(engine_module, "render_frame", blocked_render)
+    reset_thread = threading.Thread(
+        target=lambda: engine.reset_counters(context.stream_id),
+        daemon=True,
+    )
+    options_thread = threading.Thread(
+        target=lambda: (
+            engine.update_options(context.stream_id, detection_enabled=False),
+            options_updated.set(),
+        ),
+        daemon=True,
+    )
+
+    try:
+        reset_thread.start()
+        assert render_started.wait(timeout=1.0)
+        options_thread.start()
+        assert options_updated.wait(timeout=0.5)
+    finally:
+        release_render.set()
+        reset_thread.join(timeout=1.0)
+        options_thread.join(timeout=1.0)
+
+    assert context.render_state_revision == 2
+    assert context.latest_rendered_frame is previous_rendered
+    assert context.latest_rendered_version == (11, 3)
+    assert context.render_revision == 3
+
+
+def test_reset_rerender_does_not_overwrite_newer_publication(monkeypatch) -> None:
+    context = _context()
+    engine = _minimal_engine(context)
+    context.counter = FakeCounter()
+    context.tracker = SimpleNamespace(trajectories={})
+    context.runtime_generation = 12
+    context.render_revision = 4
+    context.latest_frame = np.full((4, 4, 3), 13, dtype=np.uint8)
+    context.latest_detections = Detections.empty()
+    context.latest_rendered_frame = np.full((4, 4, 3), 14, dtype=np.uint8)
+    context.latest_rendered_version = (12, 4)
+    render_started = threading.Event()
+    release_render = threading.Event()
+    newer_published = threading.Event()
+    newer_raw = np.full((4, 4, 3), 21, dtype=np.uint8)
+    newer_rendered = np.full((4, 4, 3), 22, dtype=np.uint8)
+    newer_detections = Detections.empty()
+
+    def blocked_render(*_args, **_kwargs):
+        render_started.set()
+        release_render.wait(timeout=2.0)
+        return np.full((4, 4, 3), 99, dtype=np.uint8)
+
+    def publish_newer() -> None:
+        context.publish_rendered_frame(newer_raw, newer_rendered, newer_detections)
+        newer_published.set()
+
+    monkeypatch.setattr(engine_module, "render_frame", blocked_render)
+    reset_thread = threading.Thread(
+        target=lambda: engine.reset_counters(context.stream_id),
+        daemon=True,
+    )
+    publish_thread = threading.Thread(target=publish_newer, daemon=True)
+
+    try:
+        reset_thread.start()
+        assert render_started.wait(timeout=1.0)
+        publish_thread.start()
+        assert newer_published.wait(timeout=0.5)
+    finally:
+        release_render.set()
+        reset_thread.join(timeout=1.0)
+        publish_thread.join(timeout=1.0)
+
+    assert context.latest_frame is newer_raw
+    assert context.latest_rendered_frame is newer_rendered
+    assert context.latest_detections is newer_detections
+    assert context.latest_rendered_version == (12, 5)
+    assert context.render_revision == 5
 
 
 def test_reset_counters_without_current_frame_does_not_rerender(monkeypatch) -> None:
