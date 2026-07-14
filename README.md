@@ -226,10 +226,24 @@ the isolated final evaluation:
 
 ```bash
 python scripts/evaluate_model.py \
-  --model models/checkpoints/best.pt \
+  --model models/training_runs/full_a/<run-id>/ultralytics/a_full/weights/best.pt \
   --split test \
   --output reports/best_test_metrics.json
 ```
+
+Training never replaces the runtime checkpoint. After evaluation and model
+selection, promotion is a separate explicit step with mandatory source,
+destination, and expected SHA-256. The command verifies the one-class person
+detector, stages it beside the destination, and publishes it atomically:
+
+```bash
+python scripts/promote_model.py \
+  --source models/training_runs/full_a/<run-id>/ultralytics/a_full/weights/best.pt \
+  --destination models/checkpoints/best.pt \
+  --expected-sha256 <sha256>
+```
+
+Promotion evidence is written separately under `reports/model_promotions/`.
 
 Ultralytics performs its own resize, letterbox, tensor conversion, and normalization. The project does not apply a second manual normalization path to PyTorch inference.
 

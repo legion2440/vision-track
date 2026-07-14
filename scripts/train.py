@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import sys
 import time
 import traceback
@@ -193,11 +192,6 @@ def run(args: argparse.Namespace) -> dict:
             "validation_metrics": evaluator_metrics(validation),
         }
 
-    destination = resolve_project_path(config.model.checkpoint)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if not _git_ignored(destination):
-        raise RuntimeError(f"Runtime checkpoint destination is not ignored: {destination}")
-    shutil.copy2(checkpoints["best"], destination)
     after = dataset_fingerprint(control_root)
     if before != after:
         raise RuntimeError("Control coco_person changed during full A training")
@@ -213,6 +207,7 @@ def run(args: argparse.Namespace) -> dict:
             "test_used": False,
             "validation_split": "val",
             "confidence_sweep_performed": False,
+            "runtime_promotion_performed": False,
         },
         "pretrained_model": config.model.pretrained,
         "dataset": contract,
@@ -237,7 +232,6 @@ def run(args: argparse.Namespace) -> dict:
         "training_wall_seconds": wall_seconds,
         "training_metrics": evaluator_metrics(results),
         "checkpoints": reload_verification,
-        "runtime_best_checkpoint": checkpoint_artifact(destination, ROOT),
         "ultralytics_save_dir": _display_path(save_dir),
     }
     _write_json(report_root / "training_report.json", report)

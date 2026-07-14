@@ -160,13 +160,15 @@ def _run_operational_metrics(
         label_path = linked_root / "labels" / "val" / f"{Path(image_name).stem}.txt"
         expected = read_yolo_xyxy(label_path, width, height)
         boxes = result.boxes
-        predicted = (
-            boxes.xyxy.detach().cpu().numpy()
-            if boxes is not None and len(boxes)
-            else np.empty((0, 4), dtype=np.float32)
-        )
+        if boxes is not None and len(boxes):
+            predicted = boxes.xyxy.detach().cpu().numpy()
+            confidences = boxes.conf.detach().cpu().numpy()
+        else:
+            predicted = np.empty((0, 4), dtype=np.float32)
+            confidences = np.empty((0,), dtype=np.float32)
         tp, fp, fn = match_detection_counts(
             predicted,
+            confidences,
             expected,
             iou_threshold=OPERATIONAL_MATCH_IOU,
         )
@@ -195,7 +197,13 @@ def _run_operational_metrics(
     precision = totals["tp"] / (totals["tp"] + totals["fp"]) if totals["tp"] + totals["fp"] else 0.0
     recall = totals["tp"] / (totals["tp"] + totals["fn"]) if totals["tp"] + totals["fn"] else 0.0
     metrics = {
-        "semantics": "fixed project runtime confidence; IoU=0.50 one-to-one matching",
+        "semantics": (
+            "fixed project runtime confidence; detections matched in descending "
+            "confidence order to the best unmatched ground truth at IoU>=0.50"
+        ),
+        "matching_algorithm": "confidence_descending_best_unmatched_gt",
+        "matching_algorithm_version": 2,
+        "computed_at": utc_timestamp(),
         "split": "val",
         "confidence": config.model.confidence,
         "nms_iou": config.model.iou,
@@ -385,6 +393,7 @@ def _write_markdown(path: Path, summary: dict) -> None:
     evaluator = z0["evaluator_metrics"]
     smoke = summary["a_smoke"]
     estimate = summary["full_a_plan"]["estimate"]
+    crowd = summary["contamination"]["unlabeled_crowd_val"]
     lines = [
         "# Detector baseline Z0/A readiness",
         "",
@@ -414,6 +423,8 @@ def _write_markdown(path: Path, summary: dict) -> None:
         "",
         f"- Confidence / NMS IoU / match IoU: {operational['confidence']} / "
         f"{operational['nms_iou']} / {operational['matching_iou']}",
+        f"- Matching: `{operational['matching_algorithm']}` "
+        f"(v{operational['matching_algorithm_version']})",
         f"- Precision: {operational['precision']:.6f}",
         f"- Recall: {operational['recall']:.6f}",
         f"- Detections: {operational['detections']}",
@@ -438,6 +449,7 @@ def _write_markdown(path: Path, summary: dict) -> None:
         f"{estimate['estimated_hours_range'][1]:.2f} hours.",
         f"- Provisional disk range: {estimate['estimated_disk_bytes_range'][0] / 2**30:.2f}–"
         f"{estimate['estimated_disk_bytes_range'][1] / 2**30:.2f} GiB.",
+        "- Runtime promotion: not performed; it is a separate explicit stage.",
         "",
         "## Known control limitation",
         "",
@@ -445,6 +457,11 @@ def _write_markdown(path: Path, summary: dict) -> None:
         "pHash clusters remain in the unchanged control split. Z0/A results should "
         "be interpreted with this small contamination; remediation belongs only to "
         "dataset_v2 or a separate deduplicated materialization.",
+        "",
+        f"The validation split also contains {crowd['regions']} unlabeled `iscrowd` "
+        f"regions across {crowd['images_with_regions']} images. Real crowded people "
+        "omitted from YOLO labels can be counted as operational false positives and "
+        "can suppress measured recall. Crowd policy remains deferred to dataset_v2.",
         "",
     ]
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -488,7 +505,7 @@ def run(args: argparse.Namespace) -> dict:
         "sha256": file_sha256(model_source) if isinstance(model_source, Path) else None,
     }
     summary: dict = {
-        "schema_version": 1,
+        "schema_version": 2,
         "run_id": run_id,
         "started_at": started_at,
         "status": "running",
@@ -690,6 +707,10 @@ def run(args: argparse.Namespace) -> dict:
             "plots and validation diagnostics",
             "checkpoint SHA-256/reload report",
         ],
+        "runtime_promotion": {
+            "performed": False,
+            "stage": "scripts/promote_model.py",
+        },
     }
     _stage("fingerprinting control dataset after evaluation")
     after_fingerprint = dataset_fingerprint(control_root)
@@ -721,6 +742,8 @@ def run(args: argparse.Namespace) -> dict:
             "confidence": config.model.confidence,
             "nms_iou": config.model.iou,
             "matching_iou": OPERATIONAL_MATCH_IOU,
+            "matching_algorithm": "confidence_descending_best_unmatched_gt",
+            "matching_algorithm_version": 2,
         },
         "a_smoke_arguments": smoke_args,
         "full_a_arguments_not_executed": full_args,
@@ -748,6 +771,116 @@ def run(args: argparse.Namespace) -> dict:
     return summary
 
 
+def recompute_operational(args: argparse.Namespace) -> dict:
+    from ultralytics import YOLO
+
+    report_root = ROOT / "reports" / "baseline_runs" / args.run_id
+    summary_path = report_root / "summary.json"
+    if not summary_path.is_file():
+        raise FileNotFoundError(f"Completed baseline summary not found: {summary_path}")
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    if summary.get("status") != "complete":
+        raise RuntimeError(f"Baseline run is not complete: {args.run_id}")
+
+    _stage(f"verifying control fingerprint for {args.run_id}")
+    current_fingerprint = dataset_fingerprint(Path(summary["dataset"]["root"]))
+    recorded_fingerprint = summary["dataset_fingerprint_after"]
+    if current_fingerprint != recorded_fingerprint:
+        raise RuntimeError("Control dataset fingerprint changed since the baseline run")
+
+    config = load_config(args.config)
+    selected = select_device(force=None if args.device == "auto" else args.device)
+    model_source = _pretrained_path(config.model.pretrained)
+    if not isinstance(model_source, Path):
+        raise FileNotFoundError(
+            "Operational recompute requires the recorded local pretrained checkpoint"
+        )
+    recorded_model = summary["model"]["pretrained"]
+    if file_sha256(model_source) != recorded_model["sha256"]:
+        raise RuntimeError("Pretrained checkpoint SHA-256 changed since the baseline run")
+
+    local_root = ROOT / summary["artifacts"]["local_ignored_run_root"]
+    linked_root = local_root / "z0_dataset"
+    if not linked_root.is_dir():
+        raise FileNotFoundError(f"Linked Z0 dataset is unavailable: {linked_root}")
+
+    standard_metrics = summary["z0"]["evaluator_metrics"]
+    standard_metrics_sha256 = hashlib.sha256(
+        json.dumps(standard_metrics, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    previous_operational = summary["z0"]["operational_metrics"]
+    _stage("recomputing only Z0 operational metrics")
+    model = YOLO(str(model_source), task="detect")
+    operational_metrics, operational_rows = _run_operational_metrics(
+        model,
+        config=config,
+        linked_root=linked_root,
+        selected_device=selected,
+    )
+
+    corrected_at = operational_metrics["computed_at"]
+    summary["schema_version"] = 2
+    summary["updated_at"] = corrected_at
+    summary["contamination"] = load_contamination_evidence(
+        ROOT / "reports" / "dataset_audit.json"
+    )
+    summary["z0"]["operational_metrics"] = operational_metrics
+    summary["z0"]["operational_recomputed_at"] = corrected_at
+    summary["operational_recompute"] = {
+        "status": "complete",
+        "computed_at": corrected_at,
+        "previous_matching_algorithm": previous_operational.get(
+            "matching_algorithm", "global_iou_pair_greedy"
+        ),
+        "matching_algorithm": operational_metrics["matching_algorithm"],
+        "matching_algorithm_version": operational_metrics[
+            "matching_algorithm_version"
+        ],
+        "standard_evaluator_rerun": False,
+        "a_smoke_rerun": False,
+        "standard_evaluator_metrics_sha256": standard_metrics_sha256,
+        "dataset_fingerprint_verified": True,
+        "pretrained_checkpoint_sha256_verified": True,
+    }
+
+    effective_config_path = report_root / "effective_config.json"
+    effective_config = json.loads(effective_config_path.read_text(encoding="utf-8"))
+    effective_config["operational"] = {
+        "confidence": config.model.confidence,
+        "nms_iou": config.model.iou,
+        "matching_iou": OPERATIONAL_MATCH_IOU,
+        "matching_algorithm": operational_metrics["matching_algorithm"],
+        "matching_algorithm_version": operational_metrics[
+            "matching_algorithm_version"
+        ],
+        "recomputed_at": corrected_at,
+    }
+
+    _write_operational_csv(
+        report_root / "z0_operational_per_image.csv", operational_rows
+    )
+    _write_json(effective_config_path, effective_config)
+    _write_json(summary_path, summary)
+    _write_metrics_csv(report_root / "metrics.csv", summary)
+    _write_markdown(report_root / "report.md", summary)
+
+    commands_path = report_root / "commands.md"
+    commands = commands_path.read_text(encoding="utf-8")
+    correction_heading = "## Operational matching correction"
+    if correction_heading not in commands:
+        commands += (
+            f"\n{correction_heading}\n\n"
+            "Executed from Git Bash without rerunning Z0 evaluator or A-smoke:\n\n"
+            "```bash\n"
+            "PYTHONUTF8=1 .venv/Scripts/python.exe scripts/run_baseline_stage.py "
+            f"--device {args.device} --run-id {args.run_id} --operational-only\n"
+            "```\n"
+        )
+        commands_path.write_text(commands, encoding="utf-8", newline="\n")
+    _stage("operational correction complete")
+    return summary
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run the val-only Z0 evaluation and deterministic A training smoke"
@@ -758,14 +891,22 @@ def main() -> int:
         "--run-id",
         default=f"baseline_{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}",
     )
+    parser.add_argument(
+        "--operational-only",
+        action="store_true",
+        help="Recompute only operational metrics for an existing completed run",
+    )
     args = parser.parse_args()
     report_root = ROOT / "reports" / "baseline_runs" / args.run_id
     try:
-        summary = run(args)
+        summary = recompute_operational(args) if args.operational_only else run(args)
     except Exception:
         report_root.mkdir(parents=True, exist_ok=True)
         error = traceback.format_exc()
-        (report_root / "error.log").write_text(
+        error_name = (
+            "operational_recompute_error.log" if args.operational_only else "error.log"
+        )
+        (report_root / error_name).write_text(
             error,
             encoding="utf-8",
             newline="\n",

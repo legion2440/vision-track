@@ -382,28 +382,38 @@ def read_yolo_xyxy(label_path: str | Path, width: int, height: int) -> np.ndarra
 
 def match_detection_counts(
     predicted_xyxy: np.ndarray,
+    predicted_confidences: np.ndarray,
     expected_xyxy: np.ndarray,
     *,
     iou_threshold: float = OPERATIONAL_MATCH_IOU,
 ) -> tuple[int, int, int]:
     predicted = np.asarray(predicted_xyxy, dtype=np.float32).reshape(-1, 4)
+    confidences = np.asarray(predicted_confidences, dtype=np.float32).reshape(-1)
     expected = np.asarray(expected_xyxy, dtype=np.float32).reshape(-1, 4)
+    if len(confidences) != len(predicted):
+        raise ValueError(
+            "Predicted confidence count must match predicted box count: "
+            f"{len(confidences)} != {len(predicted)}"
+        )
     ious = box_iou_matrix(predicted, expected)
-    matches = sorted(
-        (
-            (float(ious[pred_index, gt_index]), int(pred_index), int(gt_index))
-            for pred_index, gt_index in np.argwhere(ious >= iou_threshold)
-        ),
-        reverse=True,
-    )
-    matched_predictions: set[int] = set()
     matched_ground_truth: set[int] = set()
-    for _, pred_index, gt_index in matches:
-        if pred_index in matched_predictions or gt_index in matched_ground_truth:
+    true_positives = 0
+    for pred_index in np.argsort(-confidences, kind="stable"):
+        available = [
+            gt_index
+            for gt_index in range(len(expected))
+            if gt_index not in matched_ground_truth
+        ]
+        if not available:
             continue
-        matched_predictions.add(pred_index)
-        matched_ground_truth.add(gt_index)
-    true_positives = len(matched_predictions)
+        best_ground_truth = max(
+            available,
+            key=lambda gt_index: float(ious[int(pred_index), gt_index]),
+        )
+        if float(ious[int(pred_index), best_ground_truth]) < iou_threshold:
+            continue
+        matched_ground_truth.add(best_ground_truth)
+        true_positives += 1
     return (
         true_positives,
         len(predicted) - true_positives,
@@ -490,6 +500,7 @@ def load_contamination_evidence(audit_report: str | Path) -> dict:
     payload = json.loads(Path(audit_report).read_text(encoding="utf-8"))
     duplicates = payload["prepared_dataset"]["duplicates"]
     review = payload["manual_review"]
+    prepared_val = payload["expected_current_preparer"]["val"]
     same_scene = sum(
         item["decision"] in {"duplicate", "near_duplicate_same_scene"}
         for item in review["phash_clusters"]
@@ -499,6 +510,16 @@ def load_contamination_evidence(audit_report: str | Path) -> dict:
         "exact_sha_cross_split_groups": duplicates["exact_cross_split_group_count"],
         "reviewed_cross_split_same_scene_phash_clusters": same_scene,
         "kept_in_control_splits": True,
+        "unlabeled_crowd_val": {
+            "images_with_regions": prepared_val[
+                "images_with_unlabeled_crowd_regions"
+            ],
+            "regions": prepared_val["unlabeled_crowd_annotations"],
+            "interpretation": (
+                "Real crowded people omitted from YOLO labels can be counted as "
+                "operational false positives and can suppress measured recall."
+            ),
+        },
         "interpretation": (
             "Z0/A control metrics include small known cross-split same-scene "
             "contamination; fixes belong only to dataset_v2 or a separate "

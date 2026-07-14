@@ -25,11 +25,12 @@ Status: **complete**
 ## Z0 project runtime threshold
 
 - Confidence / NMS IoU / match IoU: 0.35 / 0.5 / 0.5
+- Matching: `confidence_descending_best_unmatched_gt` (v2)
 - Precision: 0.884961
 - Recall: 0.581168
 - Detections: 3564
 - False positives/image: 0.304606
-- Wall time: 6.775 ms/image
+- Wall time: 7.212 ms/image
 
 ## A smoke
 
@@ -44,7 +45,10 @@ Status: **complete**
 - Configured epochs / batch / patience: 80 / 16 / 12
 - Provisional time range: 17.30–86.48 hours.
 - Provisional disk range: 0.01–0.50 GiB.
+- Runtime promotion: not performed; it is a separate explicit stage.
 
 ## Known control limitation
 
 Exact SHA leakage is zero. Five manually reviewed cross-split same-scene pHash clusters remain in the unchanged control split. Z0/A results should be interpreted with this small contamination; remediation belongs only to dataset_v2 or a separate deduplicated materialization.
+
+The validation split also contains 117 unlabeled `iscrowd` regions across 117 images. Real crowded people omitted from YOLO labels can be counted as operational false positives and can suppress measured recall. Crowd policy remains deferred to dataset_v2.

@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "run_id": "baseline_20260714T180333Z",
   "started_at": "2026-07-14T18:03:37.879823Z",
   "status": "complete",
@@ -54,6 +54,11 @@
     "exact_sha_cross_split_groups": 0,
     "reviewed_cross_split_same_scene_phash_clusters": 5,
     "kept_in_control_splits": true,
+    "unlabeled_crowd_val": {
+      "images_with_regions": 117,
+      "regions": 117,
+      "interpretation": "Real crowded people omitted from YOLO labels can be counted as operational false positives and can suppress measured recall."
+    },
     "interpretation": "Z0/A control metrics include small known cross-split same-scene contamination; fixes belong only to dataset_v2 or a separate deduplicated materialization."
   },
   "environment": {
@@ -157,7 +162,10 @@
       }
     },
     "operational_metrics": {
-      "semantics": "fixed project runtime confidence; IoU=0.50 one-to-one matching",
+      "semantics": "fixed project runtime confidence; detections matched in descending confidence order to the best unmatched ground truth at IoU>=0.50",
+      "matching_algorithm": "confidence_descending_best_unmatched_gt",
+      "matching_algorithm_version": 2,
+      "computed_at": "2026-07-14T18:57:38.339447Z",
       "split": "val",
       "confidence": 0.35,
       "nms_iou": 0.5,
@@ -172,15 +180,16 @@
       "recall": 0.5811682329095265,
       "f1": 0.7015904793682571,
       "false_positives_per_image": 0.30460624071322434,
-      "wall_seconds": 9.118954499999973,
-      "wall_ms_per_image": 6.774854754829103,
+      "wall_seconds": 9.706774499999483,
+      "wall_ms_per_image": 7.211570950965441,
       "speed_ms_per_image": {
-        "preprocess": 1.5229675334321888,
-        "inference": 1.8697737741453864,
-        "postprocess": 0.6357922734023129
+        "preprocess": 1.4190825408572965,
+        "inference": 1.6778113670140162,
+        "postprocess": 0.5537898216959208
       }
     },
-    "ultralytics_save_dir": "models/training_runs/baseline/baseline_20260714T180333Z/ultralytics/z0_val"
+    "ultralytics_save_dir": "models/training_runs/baseline/baseline_20260714T180333Z/ultralytics/z0_val",
+    "operational_recomputed_at": "2026-07-14T18:57:38.339447Z"
   },
   "a_smoke": {
     "status": "complete",
@@ -485,7 +494,11 @@
       "results.csv",
       "plots and validation diagnostics",
       "checkpoint SHA-256/reload report"
-    ]
+    ],
+    "runtime_promotion": {
+      "performed": false,
+      "stage": "scripts/promote_model.py"
+    }
   },
   "dataset_fingerprint_after": {
     "algorithm": "sha256(path,size,mtime_ns,full_text_content)",
@@ -503,5 +516,18 @@
     "metrics_csv": "reports/baseline_runs/baseline_20260714T180333Z/metrics.csv",
     "operational_per_image_csv": "reports/baseline_runs/baseline_20260714T180333Z/z0_operational_per_image.csv",
     "smoke_selection": "reports/baseline_runs/baseline_20260714T180333Z/smoke_selection.json"
+  },
+  "updated_at": "2026-07-14T18:57:38.339447Z",
+  "operational_recompute": {
+    "status": "complete",
+    "computed_at": "2026-07-14T18:57:38.339447Z",
+    "previous_matching_algorithm": "global_iou_pair_greedy",
+    "matching_algorithm": "confidence_descending_best_unmatched_gt",
+    "matching_algorithm_version": 2,
+    "standard_evaluator_rerun": false,
+    "a_smoke_rerun": false,
+    "standard_evaluator_metrics_sha256": "203982c0b555c0c0dfae772fbcdc934e1175762a7f62f84d72e54801faf69f33",
+    "dataset_fingerprint_verified": true,
+    "pretrained_checkpoint_sha256_verified": true
   }
 }

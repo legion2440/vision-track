@@ -185,8 +185,45 @@ def test_operational_matching_uses_one_to_one_iou() -> None:
         [[0, 0, 10, 10], [1, 1, 9, 9], [50, 50, 60, 60]],
         dtype=np.float32,
     )
+    confidences = np.array([0.9, 0.8, 0.7], dtype=np.float32)
 
-    assert match_detection_counts(predicted, expected, iou_threshold=0.5) == (1, 2, 1)
+    assert match_detection_counts(
+        predicted,
+        confidences,
+        expected,
+        iou_threshold=0.5,
+    ) == (1, 2, 1)
+
+
+def test_operational_matching_is_confidence_ordered() -> None:
+    expected = np.array(
+        [[0, 0, 10, 10], [4, 0, 14, 10]],
+        dtype=np.float32,
+    )
+    predicted = np.array(
+        [
+            [0, 0, 10, 10],
+            [1.5, 0, 11.5, 10],
+        ],
+        dtype=np.float32,
+    )
+    confidences = np.array([0.1, 0.9], dtype=np.float32)
+
+    assert match_detection_counts(
+        predicted,
+        confidences,
+        expected,
+        iou_threshold=0.5,
+    ) == (1, 1, 1)
+
+
+def test_operational_matching_rejects_mismatched_confidences() -> None:
+    with pytest.raises(ValueError, match="confidence count"):
+        match_detection_counts(
+            np.zeros((2, 4), dtype=np.float32),
+            np.zeros((1,), dtype=np.float32),
+            np.zeros((1, 4), dtype=np.float32),
+        )
 
 
 def test_operational_metrics_use_directory_source_for_real_batching(
@@ -323,6 +360,12 @@ def test_contamination_evidence_counts_reviewed_same_scene_clusters(
                 {"decision": "duplicate"},
             ]
         },
+        "expected_current_preparer": {
+            "val": {
+                "images_with_unlabeled_crowd_regions": 117,
+                "unlabeled_crowd_annotations": 117,
+            }
+        },
     }
     path = tmp_path / "audit.json"
     path.write_text(json.dumps(report), encoding="utf-8")
@@ -331,11 +374,20 @@ def test_contamination_evidence_counts_reviewed_same_scene_clusters(
 
     assert evidence["exact_sha_cross_split_groups"] == 0
     assert evidence["reviewed_cross_split_same_scene_phash_clusters"] == 2
+    assert evidence["unlabeled_crowd_val"]["regions"] == 117
 
 
 def test_full_training_requires_explicit_confirmation() -> None:
     with pytest.raises(RuntimeError, match="requires --confirm-full-run"):
         run_full_training(Namespace(confirm_full_run=False))
+
+
+def test_full_training_has_no_runtime_promotion_responsibility() -> None:
+    source = (ROOT / "scripts" / "train.py").read_text(encoding="utf-8")
+
+    assert "shutil.copy2" not in source
+    assert "runtime_best_checkpoint" not in source
+    assert "config.model.checkpoint" not in source
 
 
 def test_model_weights_and_training_runs_are_git_ignored() -> None:

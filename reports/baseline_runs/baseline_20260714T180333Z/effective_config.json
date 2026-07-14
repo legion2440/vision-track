@@ -25,7 +25,10 @@
   "operational": {
     "confidence": 0.35,
     "nms_iou": 0.5,
-    "matching_iou": 0.5
+    "matching_iou": 0.5,
+    "matching_algorithm": "confidence_descending_best_unmatched_gt",
+    "matching_algorithm_version": 2,
+    "recomputed_at": "2026-07-14T18:57:38.339447Z"
   },
   "a_smoke_arguments": {
     "data": "D:\\TSchool\\vision-track\\models\\training_runs\\baseline\\baseline_20260714T180333Z\\smoke_dataset\\dataset.yaml",
