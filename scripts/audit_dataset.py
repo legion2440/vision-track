@@ -24,6 +24,14 @@ def _display_path(path: Path) -> str:
         return path.resolve().as_posix()
 
 
+def audit_exit_code(report: dict) -> int:
+    complete = (
+        report.get("status") == "complete"
+        and report.get("manual_review", {}).get("status") == "complete"
+    )
+    return 0 if complete else 2
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Audit raw COCO person annotations and a prepared YOLO dataset"
@@ -210,8 +218,17 @@ def main() -> int:
     args.markdown_report.parent.mkdir(parents=True, exist_ok=True)
     with args.markdown_report.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write(render_audit_markdown(report))
-    print(json.dumps({"status": report["status"], "report": _display_path(args.report)}, indent=2))
-    return 0 if report["status"] == "complete" else 2
+    print(
+        json.dumps(
+            {
+                "status": report["status"],
+                "manual_review_status": report["manual_review"]["status"],
+                "report": _display_path(args.report),
+            },
+            indent=2,
+        )
+    )
+    return audit_exit_code(report)
 
 
 if __name__ == "__main__":

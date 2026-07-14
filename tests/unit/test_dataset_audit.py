@@ -8,6 +8,7 @@ import jsonschema
 import numpy as np
 import pytest
 
+from scripts.audit_dataset import audit_exit_code
 from scripts.prepare_coco_person import convert_split
 from vision_track.dataset_audit import (
     PreparedImageRecord,
@@ -302,6 +303,28 @@ def test_manual_review_requires_categories_and_resolved_phash_clusters() -> None
 
     assert pending["status"] == "pending"
     assert complete["status"] == "complete"
+
+
+@pytest.mark.parametrize(
+    ("audit_status", "review_status", "expected"),
+    [
+        ("complete", "complete", 0),
+        ("complete", "pending", 2),
+        ("failed_integrity", "complete", 2),
+        ("partial", "pending", 2),
+    ],
+)
+def test_audit_exit_code_requires_complete_integrity_and_manual_review(
+    audit_status: str,
+    review_status: str,
+    expected: int,
+) -> None:
+    report = {
+        "status": audit_status,
+        "manual_review": {"status": review_status},
+    }
+
+    assert audit_exit_code(report) == expected
 
 
 def test_input_validation_decodes_all_expected_images(tmp_path: Path) -> None:
