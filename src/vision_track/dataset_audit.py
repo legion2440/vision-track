@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import random
+import zipfile
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -105,6 +106,7 @@ class CocoIndex:
     images: dict[int, dict]
     boxes_by_image: dict[int, tuple[tuple[float, float, float, float], ...]]
     crowd_annotations_by_image: dict[int, int]
+    crowd_regions_by_image: dict[int, tuple[dict, ...]]
     summary: dict
 
     @property
@@ -127,6 +129,7 @@ def load_coco_person_index(annotation_path: str | Path) -> CocoIndex:
     )
     crowd_annotations = 0
     crowd_annotations_by_image: dict[int, int] = defaultdict(int)
+    crowd_regions_by_image: dict[int, list[dict]] = defaultdict(list)
     invalid_annotations = 0
     person_annotations = 0
     for annotation in payload["annotations"]:
@@ -138,6 +141,12 @@ def load_coco_person_index(annotation_path: str | Path) -> CocoIndex:
         if annotation.get("iscrowd", 0):
             crowd_annotations += 1
             crowd_annotations_by_image[image_id] += 1
+            crowd_regions_by_image[image_id].append(
+                {
+                    "bbox": list(annotation["bbox"]),
+                    "segmentation": annotation.get("segmentation"),
+                }
+            )
             continue
         normalized = _valid_coco_box(annotation, images[image_id])
         if normalized is None:
@@ -198,8 +207,132 @@ def load_coco_person_index(annotation_path: str | Path) -> CocoIndex:
         images,
         boxes_by_image,
         dict(crowd_annotations_by_image),
+        {
+            image_id: tuple(regions)
+            for image_id, regions in crowd_regions_by_image.items()
+        },
         summary,
     )
+
+
+def validate_coco_inputs(
+    raw_dir: str | Path,
+    train_index: CocoIndex,
+    val_index: CocoIndex,
+) -> dict:
+    """Validate extracted images against COCO metadata and any available ZIPs."""
+    root = Path(raw_dir)
+    extracted: dict[str, dict] = {}
+    for split, index in (("train2017", train_index), ("val2017", val_index)):
+        image_dir = root / split
+        expected = {
+            str(image["file_name"]): (int(image["width"]), int(image["height"]))
+            for image in index.images.values()
+        }
+        if not image_dir.is_dir():
+            extracted[split] = {
+                "status": "not_available",
+                "directory": image_dir.as_posix(),
+                "expected_files": len(expected),
+            }
+            continue
+        actual_paths = {
+            path.name: path
+            for path in image_dir.iterdir()
+            if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+        }
+        missing = sorted(expected.keys() - actual_paths.keys())
+        unexpected = sorted(actual_paths.keys() - expected.keys())
+        decode_failures: list[str] = []
+        dimension_mismatches: list[dict] = []
+        for file_name in sorted(expected.keys() & actual_paths.keys()):
+            image = cv2.imread(str(actual_paths[file_name]))
+            if image is None or image.size == 0:
+                decode_failures.append(file_name)
+                continue
+            height, width = image.shape[:2]
+            expected_width, expected_height = expected[file_name]
+            if (width, height) != (expected_width, expected_height):
+                dimension_mismatches.append(
+                    {
+                        "file": file_name,
+                        "expected": [expected_width, expected_height],
+                        "actual": [width, height],
+                    }
+                )
+        ok = (
+            not missing
+            and not unexpected
+            and not decode_failures
+            and not dimension_mismatches
+        )
+        extracted[split] = {
+            "status": "confirmed" if ok else "failed",
+            "directory": image_dir.as_posix(),
+            "expected_files": len(expected),
+            "actual_files": len(actual_paths),
+            "total_bytes": sum(path.stat().st_size for path in actual_paths.values()),
+            "missing_file_count": len(missing),
+            "missing_file_examples": missing[:100],
+            "unexpected_file_count": len(unexpected),
+            "unexpected_file_examples": unexpected[:100],
+            "decode_failure_count": len(decode_failures),
+            "decode_failure_examples": decode_failures[:100],
+            "dimension_mismatch_count": len(dimension_mismatches),
+            "dimension_mismatch_examples": dimension_mismatches[:100],
+        }
+
+    archive_results: dict[str, dict] = {}
+    for archive_name in (
+        "train2017.zip",
+        "val2017.zip",
+        "annotations_trainval2017.zip",
+    ):
+        archive_path = root / "archives" / archive_name
+        if not archive_path.is_file():
+            archive_results[archive_name] = {"status": "not_available"}
+            continue
+        try:
+            with zipfile.ZipFile(archive_path) as archive:
+                corrupt_member = archive.testzip()
+            archive_results[archive_name] = {
+                "status": "confirmed" if corrupt_member is None else "failed",
+                "bytes": archive_path.stat().st_size,
+                "corrupt_member": corrupt_member,
+            }
+        except (OSError, zipfile.BadZipFile) as exc:
+            archive_results[archive_name] = {
+                "status": "failed",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
+    available_extracted = [
+        item for item in extracted.values() if item["status"] != "not_available"
+    ]
+    return {
+        "status": (
+            "confirmed"
+            if len(available_extracted) == 2
+            and all(item["status"] == "confirmed" for item in available_extracted)
+            and all(
+                item["status"] in {"confirmed", "not_available"}
+                for item in archive_results.values()
+            )
+            else "failed_or_incomplete"
+        ),
+        "extracted_images": extracted,
+        "archives": archive_results,
+        "archive_limitation": (
+            "Image ZIP integrity cannot be checked because train2017.zip and/or "
+            "val2017.zip is unavailable; extracted file names, decode results, and "
+            "dimensions are checked against COCO metadata instead."
+            if any(
+                archive_results[name]["status"] == "not_available"
+                for name in ("train2017.zip", "val2017.zip")
+            )
+            else None
+        ),
+    }
 
 
 def summarize_coco_selection(index: CocoIndex, image_ids: Sequence[int]) -> dict:
@@ -362,45 +495,214 @@ def cross_split_duplicate_summary(
     exact_groups: dict[str, list[PreparedImageRecord]] = defaultdict(list)
     for record in records:
         exact_groups[record.sha256].append(record)
-    cross_exact = [
-        group
-        for group in exact_groups.values()
-        if len({record.split for record in group}) > 1
-    ]
-    exact_examples = [
-        [record.relative_path for record in group]
-        for group in cross_exact[:maximum_examples]
+    cross_exact = sorted(
+        (
+            sorted(group, key=lambda item: item.relative_path)
+            for group in exact_groups.values()
+            if len({record.split for record in group}) > 1
+        ),
+        key=lambda group: (group[0].sha256, group[0].relative_path),
+    )
+    exact_group_records = [
+        {
+            "sha256": group[0].sha256,
+            "paths": [record.relative_path for record in group],
+        }
+        for group in cross_exact
     ]
 
     tree = _BKTree()
-    near_count = 0
-    near_examples: list[dict] = []
+    near_edges: list[dict] = []
     for index, record in enumerate(records):
         for candidate_index in tree.search(record.phash, perceptual_distance):
             candidate = records[candidate_index]
             if candidate.split == record.split or candidate.sha256 == record.sha256:
                 continue
-            near_count += 1
-            if len(near_examples) < maximum_examples:
-                near_examples.append(
-                    {
-                        "left": candidate.relative_path,
-                        "right": record.relative_path,
-                        "hamming_distance": (
-                            candidate.phash ^ record.phash
-                        ).bit_count(),
-                    }
-                )
+            near_edges.append(
+                {
+                    "left": candidate.relative_path,
+                    "right": record.relative_path,
+                    "hamming_distance": (
+                        candidate.phash ^ record.phash
+                    ).bit_count(),
+                }
+            )
         tree.add(record.phash, index)
+
+    near_edges.sort(
+        key=lambda item: (
+            item["hamming_distance"],
+            item["left"],
+            item["right"],
+        )
+    )
+    parents: dict[str, str] = {}
+
+    def find(path: str) -> str:
+        parents.setdefault(path, path)
+        while parents[path] != path:
+            parents[path] = parents[parents[path]]
+            path = parents[path]
+        return path
+
+    def union(left: str, right: str) -> None:
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parents[max(left_root, right_root)] = min(left_root, right_root)
+
+    for edge in near_edges:
+        union(edge["left"], edge["right"])
+    cluster_paths: dict[str, set[str]] = defaultdict(set)
+    for path in parents:
+        cluster_paths[find(path)].add(path)
+    clusters: list[dict] = []
+    for number, paths in enumerate(
+        sorted(cluster_paths.values(), key=lambda value: sorted(value)), start=1
+    ):
+        ordered_paths = sorted(paths)
+        member_set = set(ordered_paths)
+        cluster_edges = [
+            edge
+            for edge in near_edges
+            if edge["left"] in member_set and edge["right"] in member_set
+        ]
+        clusters.append(
+            {
+                "cluster_id": f"phash-{number:05d}",
+                "paths": ordered_paths,
+                "edge_count": len(cluster_edges),
+                "minimum_hamming_distance": min(
+                    edge["hamming_distance"] for edge in cluster_edges
+                ),
+                "maximum_hamming_distance": max(
+                    edge["hamming_distance"] for edge in cluster_edges
+                ),
+            }
+        )
     return {
         "exact_cross_split_group_count": len(cross_exact),
-        "exact_cross_split_examples": exact_examples,
+        "exact_cross_split_groups": exact_group_records,
+        "exact_cross_split_examples": [
+            group["paths"] for group in exact_group_records[:maximum_examples]
+        ],
         "perceptual_hash": {
             "algorithm": "64-bit DCT pHash",
             "maximum_hamming_distance": perceptual_distance,
-            "cross_split_pair_count": near_count,
-            "examples": near_examples,
+            "cross_split_pair_count": len(near_edges),
+            "edges": near_edges,
+            "cluster_count": len(clusters),
+            "clusters": clusters,
+            "examples": near_edges[:maximum_examples],
+            "machine_evidence_truncated": False,
         },
+    }
+
+
+def build_exact_resolution_manifest(duplicates: dict) -> dict:
+    """Choose one deterministic keeper without mutating the control dataset."""
+    split_priority = {"test": 3, "val": 2, "train": 1}
+    groups: list[dict] = []
+    for number, group in enumerate(
+        duplicates.get("exact_cross_split_groups", ()), start=1
+    ):
+        paths = list(group["paths"])
+
+        def priority(path: str) -> tuple[int, int, str]:
+            parts = Path(path).parts
+            split = parts[1] if len(parts) > 1 else ""
+            try:
+                image_id = int(Path(path).stem)
+            except ValueError:
+                image_id = 2**63 - 1
+            return (-split_priority.get(split, 0), image_id, path)
+
+        keeper = min(paths, key=priority)
+        groups.append(
+            {
+                "group_id": f"exact-{number:05d}",
+                "sha256": group["sha256"],
+                "keep": keeper,
+                "exclude_from_future_dataset": sorted(
+                    path for path in paths if path != keeper
+                ),
+                "applied_to_control_coco_person": False,
+            }
+        )
+    return {
+        "policy": (
+            "Keep test over val over train; within the selected split keep the "
+            "smallest numeric COCO image id (then lexical path)."
+        ),
+        "control_dataset_mutated": False,
+        "group_count": len(groups),
+        "groups": groups,
+    }
+
+
+def build_manual_review_evidence(
+    contact_sheets: Sequence[dict],
+    phash_clusters: Sequence[dict],
+    existing: dict | None = None,
+) -> dict:
+    previous = existing or {}
+    previous_categories = {
+        item.get("category"): item
+        for item in previous.get("category_contact_sheets", ())
+    }
+    previous_clusters = {
+        item.get("cluster_id"): item
+        for item in previous.get("phash_clusters", ())
+    }
+    categories = []
+    for sheet in contact_sheets:
+        category = sheet["category"]
+        old = previous_categories.get(category, {})
+        categories.append(
+            {
+                "category": category,
+                "path": sheet["path"],
+                "review_status": old.get("review_status", "pending"),
+                "notes": old.get("notes", ""),
+            }
+        )
+    clusters = []
+    valid_decisions = {
+        "duplicate",
+        "near_duplicate_same_scene",
+        "similar_not_duplicate",
+    }
+    for cluster in phash_clusters:
+        cluster_id = cluster["cluster_id"]
+        old = previous_clusters.get(cluster_id, {})
+        decision = old.get("decision", "pending")
+        if decision not in valid_decisions | {"pending", "uncertain"}:
+            decision = "pending"
+        clusters.append(
+            {
+                "cluster_id": cluster_id,
+                "paths": cluster["paths"],
+                "decision": decision,
+                "notes": old.get("notes", ""),
+            }
+        )
+    categories_complete = all(
+        item["review_status"] == "reviewed" for item in categories
+    )
+    clusters_complete = all(
+        item["decision"] in valid_decisions for item in clusters
+    )
+    return {
+        "status": (
+            "complete" if categories_complete and clusters_complete else "pending"
+        ),
+        "category_contact_sheets": categories,
+        "phash_cluster_decisions": [
+            "duplicate",
+            "near_duplicate_same_scene",
+            "similar_not_duplicate",
+            "uncertain",
+        ],
+        "phash_clusters": clusters,
     }
 
 
@@ -450,7 +752,11 @@ def load_prepared_records(
                     empty_label_files += 1
             boxes, label_issues = _parse_yolo_boxes(selected_label)
             issues.extend(label_issues)
-            image = cv2.imread(str(image_path))
+            image_bytes = image_path.read_bytes()
+            image = cv2.imdecode(
+                np.frombuffer(image_bytes, dtype=np.uint8),
+                cv2.IMREAD_COLOR,
+            )
             if image is None or image.size == 0:
                 issues.append(f"OpenCV could not decode image: {image_path}")
                 continue
@@ -463,7 +769,7 @@ def load_prepared_records(
                     width=width,
                     height=height,
                     boxes=tuple(boxes),
-                    sha256=hashlib.sha256(image_path.read_bytes()).hexdigest(),
+                    sha256=hashlib.sha256(image_bytes).hexdigest(),
                     phash=perceptual_hash(image),
                 )
             )
@@ -520,14 +826,69 @@ def _contact_selection(
     return selected
 
 
+def _category_contact_selection(
+    records: Sequence[PreparedImageRecord],
+    category: str,
+    *,
+    maximum_images: int,
+    seed: int,
+) -> list[PreparedImageRecord]:
+    materialized = list(records)
+    if category == "random":
+        random.Random(seed).shuffle(materialized)
+    elif category == "tiny":
+        materialized = sorted(
+            (record for record in materialized if record.boxes),
+            key=lambda record: min(box[2] * box[3] for box in record.boxes),
+        )
+    elif category == "edge_partial":
+        materialized = sorted(
+            (
+                record
+                for record in materialized
+                if any(
+                    x_center - width / 2 <= 0.01
+                    or y_center - height / 2 <= 0.01
+                    or x_center + width / 2 >= 0.99
+                    or y_center + height / 2 >= 0.99
+                    for x_center, y_center, width, height in record.boxes
+                )
+            ),
+            key=lambda record: min(
+                min(
+                    x_center - width / 2,
+                    y_center - height / 2,
+                    1 - (x_center + width / 2),
+                    1 - (y_center + height / 2),
+                )
+                for x_center, y_center, width, height in record.boxes
+            ),
+        )
+    elif category == "high_density":
+        materialized.sort(key=lambda record: len(record.boxes), reverse=True)
+    else:
+        raise ValueError(f"Unknown contact-sheet category: {category}")
+    return materialized[:maximum_images]
+
+
 def write_annotation_contact_sheet(
     records: Sequence[PreparedImageRecord],
     destination: str | Path,
     *,
     maximum_images: int = 16,
     seed: int = 42,
+    category: str | None = None,
 ) -> bool:
-    selected = _contact_selection(records, maximum_images=maximum_images, seed=seed)
+    selected = (
+        _category_contact_selection(
+            records,
+            category,
+            maximum_images=maximum_images,
+            seed=seed,
+        )
+        if category is not None
+        else _contact_selection(records, maximum_images=maximum_images, seed=seed)
+    )
     if not selected:
         return False
     columns = 4
@@ -579,6 +940,217 @@ def write_annotation_contact_sheet(
     output = Path(destination)
     output.parent.mkdir(parents=True, exist_ok=True)
     return bool(cv2.imwrite(str(output), canvas))
+
+
+def _decode_coco_segmentation(segmentation: object) -> np.ndarray | None:
+    if not isinstance(segmentation, dict):
+        return None
+    size = segmentation.get("size")
+    encoded_counts = segmentation.get("counts")
+    if (
+        not isinstance(size, list)
+        or len(size) != 2
+        or not all(isinstance(value, int) and value > 0 for value in size)
+    ):
+        return None
+    if isinstance(encoded_counts, list):
+        counts = [int(value) for value in encoded_counts]
+    elif isinstance(encoded_counts, (str, bytes)):
+        encoded = (
+            encoded_counts.decode("ascii")
+            if isinstance(encoded_counts, bytes)
+            else encoded_counts
+        )
+        counts = []
+        position = 0
+        while position < len(encoded):
+            value = 0
+            shift = 0
+            more = True
+            while more:
+                if position >= len(encoded):
+                    return None
+                char_value = ord(encoded[position]) - 48
+                position += 1
+                value |= (char_value & 0x1F) << (5 * shift)
+                more = bool(char_value & 0x20)
+                if not more and (char_value & 0x10):
+                    value |= -1 << (5 * (shift + 1))
+                shift += 1
+            if len(counts) > 2:
+                value += counts[-2]
+            if value < 0:
+                return None
+            counts.append(value)
+    else:
+        return None
+    height, width = size
+    flat = np.zeros(height * width, dtype=np.uint8)
+    offset = 0
+    foreground = False
+    for run_length in counts:
+        end = offset + run_length
+        if end > flat.size:
+            return None
+        if foreground:
+            flat[offset:end] = 1
+        offset = end
+        foreground = not foreground
+    if offset != flat.size:
+        return None
+    return flat.reshape((height, width), order="F")
+
+
+def write_crowd_contact_sheet(
+    records: Sequence[PreparedImageRecord],
+    indexes: dict[str, CocoIndex],
+    destination: str | Path,
+    *,
+    maximum_images: int = 16,
+) -> dict | None:
+    candidates: list[tuple[PreparedImageRecord, CocoIndex, int]] = []
+    for record in records:
+        index = indexes[record.split]
+        try:
+            image_id = int(record.path.stem)
+        except ValueError:
+            continue
+        if image_id in index.crowd_regions_by_image:
+            candidates.append((record, index, image_id))
+    candidates.sort(
+        key=lambda item: (
+            -len(item[1].crowd_regions_by_image[item[2]]),
+            item[0].relative_path,
+        )
+    )
+    selected = candidates[:maximum_images]
+    if not selected:
+        return None
+    columns = 4
+    tile_width, tile_height, caption_height = 320, 240, 44
+    rows = (len(selected) + columns - 1) // columns
+    canvas = np.zeros(
+        (rows * (tile_height + caption_height), columns * tile_width, 3),
+        dtype=np.uint8,
+    )
+    mask_regions = 0
+    bbox_fallback_regions = 0
+    for tile_index, (record, index, image_id) in enumerate(selected):
+        image = cv2.imread(str(record.path))
+        if image is None:
+            continue
+        source_height, source_width = image.shape[:2]
+        for x_center, y_center, width, height in record.boxes:
+            x1 = max(0, int((x_center - width / 2) * source_width))
+            y1 = max(0, int((y_center - height / 2) * source_height))
+            x2 = min(source_width - 1, int((x_center + width / 2) * source_width))
+            y2 = min(source_height - 1, int((y_center + height / 2) * source_height))
+            cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        for region in index.crowd_regions_by_image[image_id]:
+            mask = _decode_coco_segmentation(region.get("segmentation"))
+            if mask is not None:
+                if mask.shape != (source_height, source_width):
+                    mask = cv2.resize(
+                        mask,
+                        (source_width, source_height),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+                overlay = image.copy()
+                overlay[mask.astype(bool)] = (0, 165, 255)
+                image = cv2.addWeighted(overlay, 0.35, image, 0.65, 0)
+                contours, _ = cv2.findContours(
+                    mask,
+                    cv2.RETR_EXTERNAL,
+                    cv2.CHAIN_APPROX_SIMPLE,
+                )
+                cv2.drawContours(image, contours, -1, (0, 165, 255), 2)
+                mask_regions += 1
+            else:
+                x, y, width, height = map(float, region["bbox"])
+                cv2.rectangle(
+                    image,
+                    (max(0, int(x)), max(0, int(y))),
+                    (
+                        min(source_width - 1, int(x + width)),
+                        min(source_height - 1, int(y + height)),
+                    ),
+                    (0, 165, 255),
+                    3,
+                )
+                bbox_fallback_regions += 1
+        scale = min(tile_width / source_width, tile_height / source_height)
+        resized_width = max(1, int(source_width * scale))
+        resized_height = max(1, int(source_height * scale))
+        resized = cv2.resize(
+            image,
+            (resized_width, resized_height),
+            interpolation=cv2.INTER_AREA,
+        )
+        row, column = divmod(tile_index, columns)
+        tile_x = column * tile_width
+        tile_y = row * (tile_height + caption_height)
+        x_offset = tile_x + (tile_width - resized_width) // 2
+        y_offset = tile_y + (tile_height - resized_height) // 2
+        canvas[
+            y_offset : y_offset + resized_height,
+            x_offset : x_offset + resized_width,
+        ] = resized
+        captions = (
+            f"{record.split}/{record.path.name}",
+            "green=person orange=crowd mask/bbox fallback",
+        )
+        for line_number, caption in enumerate(captions):
+            cv2.putText(
+                canvas,
+                caption[:48],
+                (tile_x + 4, tile_y + tile_height + 16 + line_number * 17),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.38,
+                (255, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
+    output = Path(destination)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if not cv2.imwrite(str(output), canvas):
+        return None
+    return {
+        "path": output.as_posix(),
+        "images": len(selected),
+        "segmentation_mask_regions": mask_regions,
+        "bbox_fallback_regions": bbox_fallback_regions,
+    }
+
+
+def write_perceptual_cluster_sheets(
+    records: Sequence[PreparedImageRecord],
+    clusters: Sequence[dict],
+    output_dir: str | Path,
+) -> list[dict]:
+    by_path = {record.relative_path: record for record in records}
+    output_root = Path(output_dir)
+    generated: list[dict] = []
+    for cluster in clusters:
+        members = [by_path[path] for path in cluster["paths"] if path in by_path]
+        pages: list[str] = []
+        for offset in range(0, len(members), 16):
+            page = offset // 16 + 1
+            destination = output_root / f"{cluster['cluster_id']}_p{page:02d}.jpg"
+            page_members = members[offset : offset + 16]
+            if write_annotation_contact_sheet(
+                page_members,
+                destination,
+                maximum_images=len(page_members),
+            ):
+                pages.append(destination.as_posix())
+        generated.append(
+            {
+                "cluster_id": cluster["cluster_id"],
+                "member_count": len(members),
+                "sheets": pages,
+            }
+        )
+    return generated
 
 
 def compare_raw_and_prepared(
@@ -786,6 +1358,28 @@ def render_audit_markdown(report: dict) -> str:
         lines.extend(["## Missing inputs", ""])
         lines.extend(f"- `{path}`" for path in missing)
         lines.append("")
+    input_validation = report.get("input_validation")
+    if input_validation:
+        lines.extend(["## Input integrity", ""])
+        lines.append(
+            f"Overall extracted-input status: **{input_validation['status']}**"
+        )
+        lines.append("")
+        lines.append(
+            "| Split | Expected | Actual | Decode failures | Dimension mismatches |"
+        )
+        lines.append("|---|---:|---:|---:|---:|")
+        for split in ("train2017", "val2017"):
+            item = input_validation["extracted_images"][split]
+            lines.append(
+                f"| {split} | {item['expected_files']} | {item.get('actual_files', 'n/a')} "
+                f"| {item.get('decode_failure_count', 'n/a')} "
+                f"| {item.get('dimension_mismatch_count', 'n/a')} |"
+            )
+        lines.append("")
+        if input_validation.get("archive_limitation"):
+            lines.append(f"Limitation: {input_validation['archive_limitation']}")
+            lines.append("")
     raw = report.get("raw_coco")
     if raw:
         lines.extend(["## Raw COCO person inventory", ""])
@@ -882,6 +1476,29 @@ def render_audit_markdown(report: dict) -> str:
                 f"| {item['objects']} |"
             )
         lines.append("")
+        duplicates = prepared.get("duplicates", {})
+        phash = duplicates.get("perceptual_hash", {})
+        lines.extend(["## Cross-split leakage evidence", ""])
+        lines.append(
+            f"- Exact SHA-256 groups: {duplicates.get('exact_cross_split_group_count', 0)}"
+        )
+        lines.append(
+            f"- pHash candidate edges (distance ≤ "
+            f"{phash.get('maximum_hamming_distance', 'n/a')}): "
+            f"{phash.get('cross_split_pair_count', 0)}"
+        )
+        lines.append(f"- pHash connected clusters: {phash.get('cluster_count', 0)}")
+        lines.append(
+            "- Machine JSON/CSV evidence is complete; only prose previews may be capped."
+        )
+        lines.append("")
+        exact_manifest = report.get("exact_duplicate_resolution_manifest", {})
+        lines.append(
+            f"The deterministic exact-duplicate resolution manifest contains "
+            f"{exact_manifest.get('group_count', 0)} groups and has not been applied "
+            "to the control `coco_person` materialization."
+        )
+        lines.append("")
     comparison = report.get("raw_vs_prepared")
     if comparison:
         labels = comparison["label_comparison"]
@@ -912,20 +1529,51 @@ def render_audit_markdown(report: dict) -> str:
                 f"- **{warning['code']}**: {warning['message']}"
             )
         lines.append("")
+    review = report.get("manual_review")
+    lines.extend(["## Manual visual review", ""])
+    if review:
+        lines.append(f"Review status: **{review['status']}**")
+        lines.append("")
+        for item in review["category_contact_sheets"]:
+            lines.append(
+                f"- `{item['category']}`: {item['review_status']} — "
+                f"{item['notes'] or 'no note'}"
+            )
+        for item in review["phash_clusters"]:
+            lines.append(
+                f"- `{item['cluster_id']}`: {item['decision']} — "
+                f"{item['notes'] or 'no note'}"
+            )
+        lines.append("")
+    else:
+        lines.append("No manual-review evidence was supplied.")
+        lines.append("")
+    exact_count = report.get("prepared_dataset", {}).get("duplicates", {}).get(
+        "exact_cross_split_group_count", 0
+    )
+    reviewed_phash_count = sum(
+        item.get("decision") in {"duplicate", "near_duplicate_same_scene"}
+        for item in (review or {}).get("phash_clusters", ())
+    )
     lines.extend(
         [
-            "## Manual review still required",
+            "## Dataset v2 recommendations",
             "",
-            "Lighting, indoor/outdoor context, body-part distractors, screens/posters, "
-            "reflections, occlusion quality, and label correctness require review of "
-            "the generated contact sheets. They are not inferred from COCO metadata.",
+            "- Preserve this `coco_person` output unchanged as the seed-42 control.",
+            f"- Exact leakage groups: {exact_count}; apply any exact-resolution "
+            "manifest only to `dataset_v2`.",
+            f"- Group each of the {reviewed_phash_count} reviewed duplicate/same-scene "
+            "pHash clusters into one split only in `dataset_v2` or a separately "
+            "named deduplicated materialization.",
+            "- Decide whether retained iscrowd regions become exclusions, ignore "
+            "regions, or manually verified positives before training.",
+            "- Add COCO images without person as ordinary negatives only in the new "
+            "dataset version, together with domain positives and hard negatives.",
+            "- Assign webcam/CCTV frames by source, scene, and time block; keep COCO, "
+            "domain, and hard-negative metrics separate and freeze test before "
+            "threshold selection.",
             "",
-            "## Split recommendation",
-            "",
-            "Keep COCO general evaluation separate from domain webcam/CCTV and "
-            "hard-negative results. Assign domain samples by source/scene/time-block "
-            "group, never by individual frame. Freeze the final test groups before "
-            "threshold selection and use only train data for augmentation/calibration.",
+            "Training was not started by this audit.",
             "",
         ]
     )
@@ -985,6 +1633,11 @@ def audit_dataset(
     if raw_available:
         train_index = load_coco_person_index(train_annotation)
         val_index = load_coco_person_index(val_annotation)
+        report["input_validation"] = validate_coco_inputs(
+            raw_root,
+            train_index,
+            val_index,
+        )
         report["raw_coco"] = {
             "train2017": train_index.summary,
             "val2017": val_index.summary,
@@ -1043,23 +1696,47 @@ def audit_dataset(
 
     if prepared_available:
         records, prepared_summary = load_prepared_records(prepared_root)
-        prepared_summary["duplicates"] = cross_split_duplicate_summary(
+        duplicates = cross_split_duplicate_summary(
             records,
             perceptual_distance=perceptual_distance,
         )
+        prepared_summary["duplicates"] = duplicates
         report["prepared_dataset"] = prepared_summary
+        report["exact_duplicate_resolution_manifest"] = (
+            build_exact_resolution_manifest(duplicates)
+        )
         if contact_sheet_dir is not None:
             output_dir = Path(contact_sheet_dir)
-            generated = []
-            for split in DEFAULT_SPLITS:
-                destination = output_dir / f"{split}_annotations.jpg"
+            generated: list[dict] = []
+            for category in ("random", "tiny", "edge_partial", "high_density"):
+                destination = output_dir / f"{category}.jpg"
                 if write_annotation_contact_sheet(
-                    [record for record in records if record.split == split],
+                    records,
                     destination,
                     seed=seed,
+                    category=category,
                 ):
-                    generated.append(destination.as_posix())
+                    generated.append(
+                        {"category": category, "path": destination.as_posix()}
+                    )
+            if train_index and val_index:
+                crowd_sheet = write_crowd_contact_sheet(
+                    records,
+                    {
+                        "train": train_index,
+                        "val": val_index,
+                        "test": val_index,
+                    },
+                    output_dir / "crowd.jpg",
+                )
+                if crowd_sheet:
+                    generated.append({"category": "crowd", **crowd_sheet})
             report["contact_sheets"] = generated
+            report["perceptual_cluster_sheets"] = write_perceptual_cluster_sheets(
+                records,
+                duplicates["perceptual_hash"]["clusters"],
+                output_dir / "phash_clusters",
+            )
         if train_index and val_index and expected_ids:
             report["raw_vs_prepared"] = compare_raw_and_prepared(
                 train_index,
@@ -1088,5 +1765,21 @@ def audit_dataset(
         )
 
     if not missing_inputs:
-        report["status"] = "complete"
+        input_confirmed = (
+            report.get("input_validation", {}).get("status") == "confirmed"
+        )
+        conversion_confirmed = report.get("raw_vs_prepared", {}).get(
+            "conversion_matches_current_preparer"
+        ) is True
+        prepared_clean = bool(
+            report.get("prepared_dataset")
+            and report["prepared_dataset"]["missing_label_files"] == 0
+            and report["prepared_dataset"]["empty_label_files"] == 0
+            and not report["prepared_dataset"]["issues"]
+        )
+        report["status"] = (
+            "complete"
+            if input_confirmed and conversion_confirmed and prepared_clean
+            else "failed_integrity"
+        )
     return report

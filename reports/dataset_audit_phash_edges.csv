@@ -1,0 +1,8 @@
+left,right,hamming_distance
+images/train/000000080010.jpg,images/val/000000140556.jpg,0
+images/train/000000334631.jpg,images/val/000000423123.jpg,0
+images/train/000000062297.jpg,images/test/000000020333.jpg,2
+images/train/000000535889.jpg,images/test/000000465129.jpg,2
+images/train/000000119502.jpg,images/test/000000020333.jpg,4
+images/train/000000214648.jpg,images/val/000000129062.jpg,4
+images/train/000000443296.jpg,images/test/000000375493.jpg,6

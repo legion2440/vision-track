@@ -1,0 +1,68 @@
+{
+  "algorithm": "64-bit DCT pHash",
+  "maximum_hamming_distance": 6,
+  "cluster_count": 6,
+  "clusters": [
+    {
+      "cluster_id": "phash-00001",
+      "paths": [
+        "images/test/000000020333.jpg",
+        "images/train/000000062297.jpg",
+        "images/train/000000119502.jpg"
+      ],
+      "edge_count": 2,
+      "minimum_hamming_distance": 2,
+      "maximum_hamming_distance": 4
+    },
+    {
+      "cluster_id": "phash-00002",
+      "paths": [
+        "images/test/000000375493.jpg",
+        "images/train/000000443296.jpg"
+      ],
+      "edge_count": 1,
+      "minimum_hamming_distance": 6,
+      "maximum_hamming_distance": 6
+    },
+    {
+      "cluster_id": "phash-00003",
+      "paths": [
+        "images/test/000000465129.jpg",
+        "images/train/000000535889.jpg"
+      ],
+      "edge_count": 1,
+      "minimum_hamming_distance": 2,
+      "maximum_hamming_distance": 2
+    },
+    {
+      "cluster_id": "phash-00004",
+      "paths": [
+        "images/train/000000080010.jpg",
+        "images/val/000000140556.jpg"
+      ],
+      "edge_count": 1,
+      "minimum_hamming_distance": 0,
+      "maximum_hamming_distance": 0
+    },
+    {
+      "cluster_id": "phash-00005",
+      "paths": [
+        "images/train/000000214648.jpg",
+        "images/val/000000129062.jpg"
+      ],
+      "edge_count": 1,
+      "minimum_hamming_distance": 4,
+      "maximum_hamming_distance": 4
+    },
+    {
+      "cluster_id": "phash-00006",
+      "paths": [
+        "images/train/000000334631.jpg",
+        "images/val/000000423123.jpg"
+      ],
+      "edge_count": 1,
+      "minimum_hamming_distance": 0,
+      "maximum_hamming_distance": 0
+    }
+  ]
+}

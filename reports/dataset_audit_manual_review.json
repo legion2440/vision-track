@@ -1,0 +1,98 @@
+{
+  "status": "complete",
+  "category_contact_sheets": [
+    {
+      "category": "random",
+      "path": "reports/dataset_audit_contact_sheets/random.jpg",
+      "review_status": "reviewed",
+      "notes": "Varied scenes and scales; sampled person boxes align visually and no corrupt image or label rendering is apparent."
+    },
+    {
+      "category": "tiny",
+      "path": "reports/dataset_audit_contact_sheets/tiny.jpg",
+      "review_status": "reviewed",
+      "notes": "Very small people are frequently only a few pixels but boxes land on plausible person locations; these examples remain inherently hard to verify precisely."
+    },
+    {
+      "category": "edge_partial",
+      "path": "reports/dataset_audit_contact_sheets/edge_partial.jpg",
+      "review_status": "reviewed",
+      "notes": "Partial and out-of-frame people are common. Some extreme boxes show only limited visible body evidence and should be considered explicitly in dataset_v2 policy; the control labels remain unchanged."
+    },
+    {
+      "category": "high_density",
+      "path": "reports/dataset_audit_contact_sheets/high_density.jpg",
+      "review_status": "reviewed",
+      "notes": "Dense scenes contain many plausible person boxes, while additional crowd/background people are not represented by ordinary YOLO boxes; this supports the documented crowd-risk review."
+    },
+    {
+      "category": "crowd",
+      "path": "reports/dataset_audit_contact_sheets/crowd.jpg",
+      "review_status": "reviewed",
+      "notes": "All 16 displayed crowd regions decoded from COCO RLE segmentation masks (orange), with zero bbox fallbacks. Masks expose substantial real-person content omitted from ordinary green YOLO boxes."
+    }
+  ],
+  "phash_cluster_decisions": [
+    "duplicate",
+    "near_duplicate_same_scene",
+    "similar_not_duplicate",
+    "uncertain"
+  ],
+  "phash_clusters": [
+    {
+      "cluster_id": "phash-00001",
+      "paths": [
+        "images/test/000000020333.jpg",
+        "images/train/000000062297.jpg",
+        "images/train/000000119502.jpg"
+      ],
+      "decision": "near_duplicate_same_scene",
+      "notes": "Same child and composition in three color/processing variants across train and test."
+    },
+    {
+      "cluster_id": "phash-00002",
+      "paths": [
+        "images/test/000000375493.jpg",
+        "images/train/000000443296.jpg"
+      ],
+      "decision": "similar_not_duplicate",
+      "notes": "False pHash candidate: a woman in a dark night scene versus people on a daylight tennis court."
+    },
+    {
+      "cluster_id": "phash-00003",
+      "paths": [
+        "images/test/000000465129.jpg",
+        "images/train/000000535889.jpg"
+      ],
+      "decision": "near_duplicate_same_scene",
+      "notes": "Same kitchen, person, pose, and framing across train and test."
+    },
+    {
+      "cluster_id": "phash-00004",
+      "paths": [
+        "images/train/000000080010.jpg",
+        "images/val/000000140556.jpg"
+      ],
+      "decision": "near_duplicate_same_scene",
+      "notes": "Same four road workers and composition across train and validation."
+    },
+    {
+      "cluster_id": "phash-00005",
+      "paths": [
+        "images/train/000000214648.jpg",
+        "images/val/000000129062.jpg"
+      ],
+      "decision": "near_duplicate_same_scene",
+      "notes": "Same storefront scene with a small framing shift across train and validation."
+    },
+    {
+      "cluster_id": "phash-00006",
+      "paths": [
+        "images/train/000000334631.jpg",
+        "images/val/000000423123.jpg"
+      ],
+      "decision": "near_duplicate_same_scene",
+      "notes": "Same indoor group and framing across train and validation; validation includes one additional visible-person box."
+    }
+  ]
+}

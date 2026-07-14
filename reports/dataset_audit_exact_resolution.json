@@ -1,0 +1,6 @@
+{
+  "policy": "Keep test over val over train; within the selected split keep the smallest numeric COCO image id (then lexical path).",
+  "control_dataset_mutated": false,
+  "group_count": 0,
+  "groups": []
+}

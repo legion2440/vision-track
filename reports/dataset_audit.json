@@ -1,10 +1,8 @@
 {
-  "status": "partial",
+  "status": "complete",
   "raw_dir": "data/raw/coco2017",
   "prepared_dir": "data/processed/coco_person",
-  "missing_inputs": [
-    "data/processed/coco_person/images/{train,val,test}"
-  ],
+  "missing_inputs": [],
   "annotation_policy": "docs/annotation_policy.md",
   "domain_manifest_schema": "configs/domain_manifest.schema.json",
   "preparer_empty_image_behavior": {
@@ -12,20 +10,7 @@
     "selection": "skip images with no usable non-crowd person boxes",
     "negative_images_preserved": false
   },
-  "unexecuted_checks": [
-    {
-      "check": "prepared YOLO statistics and raw/prepared comparison",
-      "reason": "prepared images/{train,val,test} is missing"
-    },
-    {
-      "check": "exact and perceptual duplicate leakage",
-      "reason": "image files for the materialized splits are missing"
-    },
-    {
-      "check": "annotation contact sheets and manual visual review",
-      "reason": "image files for the materialized splits are missing"
-    }
-  ],
+  "unexecuted_checks": [],
   "warnings": [
     {
       "severity": "warning",
@@ -35,6 +20,55 @@
       "message": "The current preparer retains images containing normal person boxes and iscrowd regions, but does not write the crowd regions to YOLO labels. Real crowded people therefore become unlabeled background and may suppress recall. Do not choose exclusion, ignore-region handling, or manual review until the dataset policy decision is made."
     }
   ],
+  "input_validation": {
+    "status": "confirmed",
+    "extracted_images": {
+      "train2017": {
+        "status": "confirmed",
+        "directory": "data/raw/coco2017/train2017",
+        "expected_files": 118287,
+        "actual_files": 118287,
+        "total_bytes": 19314466396,
+        "missing_file_count": 0,
+        "missing_file_examples": [],
+        "unexpected_file_count": 0,
+        "unexpected_file_examples": [],
+        "decode_failure_count": 0,
+        "decode_failure_examples": [],
+        "dimension_mismatch_count": 0,
+        "dimension_mismatch_examples": []
+      },
+      "val2017": {
+        "status": "confirmed",
+        "directory": "data/raw/coco2017/val2017",
+        "expected_files": 5000,
+        "actual_files": 5000,
+        "total_bytes": 814705164,
+        "missing_file_count": 0,
+        "missing_file_examples": [],
+        "unexpected_file_count": 0,
+        "unexpected_file_examples": [],
+        "decode_failure_count": 0,
+        "decode_failure_examples": [],
+        "dimension_mismatch_count": 0,
+        "dimension_mismatch_examples": []
+      }
+    },
+    "archives": {
+      "train2017.zip": {
+        "status": "not_available"
+      },
+      "val2017.zip": {
+        "status": "not_available"
+      },
+      "annotations_trainval2017.zip": {
+        "status": "confirmed",
+        "bytes": 252907541,
+        "corrupt_member": null
+      }
+    },
+    "archive_limitation": "Image ZIP integrity cannot be checked because train2017.zip and/or val2017.zip is unavailable; extracted file names, decode results, and dimensions are checked against COCO metadata instead."
+  },
   "raw_coco": {
     "train2017": {
       "source_split": "train2017",
@@ -592,5 +626,740 @@
         "touches_frame_edge": 1185
       }
     }
+  },
+  "prepared_dataset": {
+    "split_statistics": {
+      "train": {
+        "images": 64115,
+        "images_without_people": 0,
+        "objects": 257252,
+        "people_per_image": {
+          "count": 64115,
+          "min": 1.0,
+          "p05": 1.0,
+          "p25": 1.0,
+          "p50": 2.0,
+          "p75": 6.0,
+          "p95": 13.0,
+          "max": 19.0,
+          "mean": 4.0123528035561105
+        },
+        "image_width": {
+          "count": 64115,
+          "min": 59.0,
+          "p05": 411.0,
+          "p25": 500.0,
+          "p50": 640.0,
+          "p75": 640.0,
+          "p95": 640.0,
+          "max": 640.0,
+          "mean": 576.8549169461124
+        },
+        "image_height": {
+          "count": 64115,
+          "min": 51.0,
+          "p05": 340.0,
+          "p25": 426.0,
+          "p50": 480.0,
+          "p75": 526.0,
+          "p95": 640.0,
+          "max": 640.0,
+          "mean": 484.45568119784764
+        },
+        "image_aspect_ratio": {
+          "count": 64115,
+          "min": 0.24375,
+          "p05": 0.666,
+          "p25": 1.0,
+          "p50": 1.3333333333333333,
+          "p75": 1.4988290398126465,
+          "p95": 1.6368286445012785,
+          "max": 5.7657657657657655,
+          "mean": 1.253121599321083
+        },
+        "boxes": {
+          "width_fraction": {
+            "count": 257252,
+            "min": 0.001375,
+            "p05": 0.011375,
+            "p25": 0.03192188,
+            "p50": 0.07379687,
+            "p75": 0.1788220325,
+            "p95": 0.5355121184999995,
+            "max": 1.0,
+            "mean": 0.1440197806418609
+          },
+          "height_fraction": {
+            "count": 257252,
+            "min": 0.00167188,
+            "p05": 0.026380412500000002,
+            "p25": 0.0764168125,
+            "p50": 0.17755869,
+            "p75": 0.42471698,
+            "p95": 0.8494358885,
+            "max": 1.0,
+            "mean": 0.2815520903212803
+          },
+          "area_fraction": {
+            "count": 257252,
+            "min": 3.5095027344000003e-06,
+            "p05": 0.000336035308535,
+            "p25": 0.0025302894562542,
+            "p50": 0.013019501979775,
+            "p75": 0.07384489642714843,
+            "p95": 0.39862909185172524,
+            "max": 1.0,
+            "mean": 0.07697852902437471
+          },
+          "aspect_ratio": {
+            "count": 257252,
+            "min": 0.027490393142181494,
+            "p05": 0.18653706085889676,
+            "p25": 0.2909039733492005,
+            "p50": 0.43493912165317417,
+            "p75": 0.6470742236700907,
+            "p95": 1.1722672398310274,
+            "max": 12.278429372768995,
+            "mean": 0.5290200476944578
+          },
+          "area_bands": {
+            "small_lt_1pct": 117992,
+            "medium_1_to_10pct": 85400,
+            "large_ge_10pct": 53860
+          },
+          "touches_frame_edge": 52805
+        }
+      },
+      "val": {
+        "images": 1346,
+        "images_without_people": 0,
+        "objects": 5427,
+        "people_per_image": {
+          "count": 1346,
+          "min": 1.0,
+          "p05": 1.0,
+          "p25": 1.0,
+          "p50": 2.0,
+          "p75": 6.0,
+          "p95": 13.0,
+          "max": 13.0,
+          "mean": 4.031946508172362
+        },
+        "image_width": {
+          "count": 1346,
+          "min": 240.0,
+          "p05": 423.25,
+          "p25": 500.0,
+          "p50": 640.0,
+          "p75": 640.0,
+          "p95": 640.0,
+          "max": 640.0,
+          "mean": 577.7904903417533
+        },
+        "image_height": {
+          "count": 1346,
+          "min": 164.0,
+          "p05": 334.25,
+          "p25": 426.0,
+          "p50": 480.0,
+          "p75": 519.25,
+          "p95": 640.0,
+          "max": 640.0,
+          "mean": 482.91530460624074
+        },
+        "image_aspect_ratio": {
+          "count": 1346,
+          "min": 0.4625,
+          "p05": 0.665625,
+          "p25": 1.0,
+          "p50": 1.3333333333333333,
+          "p75": 1.4988290398126465,
+          "p95": 1.6067902876161464,
+          "max": 3.902439024390244,
+          "mean": 1.260538896233717
+        },
+        "boxes": {
+          "width_fraction": {
+            "count": 5427,
+            "min": 0.00196875,
+            "p05": 0.011660936,
+            "p25": 0.03372604,
+            "p50": 0.07765714,
+            "p75": 0.17788281,
+            "p95": 0.511994396,
+            "max": 1.0,
+            "mean": 0.14271720075916713
+          },
+          "height_fraction": {
+            "count": 5427,
+            "min": 0.00519906,
+            "p05": 0.026852462,
+            "p25": 0.08167293,
+            "p50": 0.18524,
+            "p75": 0.410840655,
+            "p95": 0.844483331,
+            "max": 1.0,
+            "mean": 0.2818417158411646
+          },
+          "area_fraction": {
+            "count": 5427,
+            "min": 1.74625846875e-05,
+            "p05": 0.00034430977904943005,
+            "p25": 0.002879944414375,
+            "p50": 0.014353364357239601,
+            "p75": 0.07071156068835625,
+            "p95": 0.38222036085136357,
+            "max": 1.0,
+            "mean": 0.07505024549308859
+          },
+          "aspect_ratio": {
+            "count": 5427,
+            "min": 0.039565235855440584,
+            "p05": 0.18768796508066793,
+            "p25": 0.29043482368534224,
+            "p50": 0.4400564783367072,
+            "p75": 0.6564998743752972,
+            "p95": 1.1432280088777989,
+            "max": 5.2055934086315006,
+            "mean": 0.5296200609163286
+          },
+          "area_bands": {
+            "small_lt_1pct": 2385,
+            "medium_1_to_10pct": 1931,
+            "large_ge_10pct": 1111
+          },
+          "touches_frame_edge": 1155
+        }
+      },
+      "test": {
+        "images": 1347,
+        "images_without_people": 0,
+        "objects": 5350,
+        "people_per_image": {
+          "count": 1347,
+          "min": 1.0,
+          "p05": 1.0,
+          "p25": 1.0,
+          "p50": 2.0,
+          "p75": 5.0,
+          "p95": 13.0,
+          "max": 13.0,
+          "mean": 3.971789161098738
+        },
+        "image_width": {
+          "count": 1347,
+          "min": 200.0,
+          "p05": 375.0,
+          "p25": 480.0,
+          "p50": 640.0,
+          "p75": 640.0,
+          "p95": 640.0,
+          "max": 640.0,
+          "mean": 565.3838158871566
+        },
+        "image_height": {
+          "count": 1347,
+          "min": 145.0,
+          "p05": 335.0,
+          "p25": 427.0,
+          "p50": 480.0,
+          "p75": 611.0,
+          "p95": 640.0,
+          "max": 640.0,
+          "mean": 486.1915367483296
+        },
+        "image_aspect_ratio": {
+          "count": 1347,
+          "min": 0.384375,
+          "p05": 0.666,
+          "p25": 0.7515625,
+          "p50": 1.3333333333333333,
+          "p75": 1.4988290398126465,
+          "p95": 1.6035762483130904,
+          "max": 3.004694835680751,
+          "mean": 1.225631450114942
+        },
+        "boxes": {
+          "width_fraction": {
+            "count": 5350,
+            "min": 0.00226562,
+            "p05": 0.0111579375,
+            "p25": 0.0329427075,
+            "p50": 0.07925781,
+            "p75": 0.1881488025,
+            "p95": 0.5424336120000004,
+            "max": 1.0,
+            "mean": 0.14917579185046728
+          },
+          "height_fraction": {
+            "count": 5350,
+            "min": 0.00346875,
+            "p05": 0.027089377999999997,
+            "p25": 0.0759768625,
+            "p50": 0.17697697,
+            "p75": 0.4157381775,
+            "p95": 0.8645984390000002,
+            "max": 1.0,
+            "mean": 0.28092387910654204
+          },
+          "area_fraction": {
+            "count": 5350,
+            "min": 1.3924115364599998e-05,
+            "p05": 0.00034868647999507,
+            "p25": 0.00270528629501775,
+            "p50": 0.0139428459332,
+            "p75": 0.07647118983435269,
+            "p95": 0.4040199909924646,
+            "max": 1.0,
+            "mean": 0.07859249827488453
+          },
+          "aspect_ratio": {
+            "count": 5350,
+            "min": 0.05598728241563055,
+            "p05": 0.18854972113538707,
+            "p25": 0.3041852137739192,
+            "p50": 0.4521064537333561,
+            "p75": 0.6793185817565167,
+            "p95": 1.266980443213757,
+            "max": 16.45480447204969,
+            "mean": 0.5639786308996841
+          },
+          "area_bands": {
+            "small_lt_1pct": 2420,
+            "medium_1_to_10pct": 1757,
+            "large_ge_10pct": 1173
+          },
+          "touches_frame_edge": 1185
+        }
+      }
+    },
+    "missing_label_files": 0,
+    "empty_label_files": 0,
+    "issues": [],
+    "duplicates": {
+      "exact_cross_split_group_count": 0,
+      "exact_cross_split_groups": [],
+      "exact_cross_split_examples": [],
+      "perceptual_hash": {
+        "algorithm": "64-bit DCT pHash",
+        "maximum_hamming_distance": 6,
+        "cross_split_pair_count": 7,
+        "edges": [
+          {
+            "left": "images/train/000000080010.jpg",
+            "right": "images/val/000000140556.jpg",
+            "hamming_distance": 0
+          },
+          {
+            "left": "images/train/000000334631.jpg",
+            "right": "images/val/000000423123.jpg",
+            "hamming_distance": 0
+          },
+          {
+            "left": "images/train/000000062297.jpg",
+            "right": "images/test/000000020333.jpg",
+            "hamming_distance": 2
+          },
+          {
+            "left": "images/train/000000535889.jpg",
+            "right": "images/test/000000465129.jpg",
+            "hamming_distance": 2
+          },
+          {
+            "left": "images/train/000000119502.jpg",
+            "right": "images/test/000000020333.jpg",
+            "hamming_distance": 4
+          },
+          {
+            "left": "images/train/000000214648.jpg",
+            "right": "images/val/000000129062.jpg",
+            "hamming_distance": 4
+          },
+          {
+            "left": "images/train/000000443296.jpg",
+            "right": "images/test/000000375493.jpg",
+            "hamming_distance": 6
+          }
+        ],
+        "cluster_count": 6,
+        "clusters": [
+          {
+            "cluster_id": "phash-00001",
+            "paths": [
+              "images/test/000000020333.jpg",
+              "images/train/000000062297.jpg",
+              "images/train/000000119502.jpg"
+            ],
+            "edge_count": 2,
+            "minimum_hamming_distance": 2,
+            "maximum_hamming_distance": 4
+          },
+          {
+            "cluster_id": "phash-00002",
+            "paths": [
+              "images/test/000000375493.jpg",
+              "images/train/000000443296.jpg"
+            ],
+            "edge_count": 1,
+            "minimum_hamming_distance": 6,
+            "maximum_hamming_distance": 6
+          },
+          {
+            "cluster_id": "phash-00003",
+            "paths": [
+              "images/test/000000465129.jpg",
+              "images/train/000000535889.jpg"
+            ],
+            "edge_count": 1,
+            "minimum_hamming_distance": 2,
+            "maximum_hamming_distance": 2
+          },
+          {
+            "cluster_id": "phash-00004",
+            "paths": [
+              "images/train/000000080010.jpg",
+              "images/val/000000140556.jpg"
+            ],
+            "edge_count": 1,
+            "minimum_hamming_distance": 0,
+            "maximum_hamming_distance": 0
+          },
+          {
+            "cluster_id": "phash-00005",
+            "paths": [
+              "images/train/000000214648.jpg",
+              "images/val/000000129062.jpg"
+            ],
+            "edge_count": 1,
+            "minimum_hamming_distance": 4,
+            "maximum_hamming_distance": 4
+          },
+          {
+            "cluster_id": "phash-00006",
+            "paths": [
+              "images/train/000000334631.jpg",
+              "images/val/000000423123.jpg"
+            ],
+            "edge_count": 1,
+            "minimum_hamming_distance": 0,
+            "maximum_hamming_distance": 0
+          }
+        ],
+        "examples": [
+          {
+            "left": "images/train/000000080010.jpg",
+            "right": "images/val/000000140556.jpg",
+            "hamming_distance": 0
+          },
+          {
+            "left": "images/train/000000334631.jpg",
+            "right": "images/val/000000423123.jpg",
+            "hamming_distance": 0
+          },
+          {
+            "left": "images/train/000000062297.jpg",
+            "right": "images/test/000000020333.jpg",
+            "hamming_distance": 2
+          },
+          {
+            "left": "images/train/000000535889.jpg",
+            "right": "images/test/000000465129.jpg",
+            "hamming_distance": 2
+          },
+          {
+            "left": "images/train/000000119502.jpg",
+            "right": "images/test/000000020333.jpg",
+            "hamming_distance": 4
+          },
+          {
+            "left": "images/train/000000214648.jpg",
+            "right": "images/val/000000129062.jpg",
+            "hamming_distance": 4
+          },
+          {
+            "left": "images/train/000000443296.jpg",
+            "right": "images/test/000000375493.jpg",
+            "hamming_distance": 6
+          }
+        ],
+        "machine_evidence_truncated": false
+      }
+    }
+  },
+  "exact_duplicate_resolution_manifest": {
+    "policy": "Keep test over val over train; within the selected split keep the smallest numeric COCO image id (then lexical path).",
+    "control_dataset_mutated": false,
+    "group_count": 0,
+    "groups": []
+  },
+  "contact_sheets": [
+    {
+      "category": "random",
+      "path": "reports/dataset_audit_contact_sheets/random.jpg"
+    },
+    {
+      "category": "tiny",
+      "path": "reports/dataset_audit_contact_sheets/tiny.jpg"
+    },
+    {
+      "category": "edge_partial",
+      "path": "reports/dataset_audit_contact_sheets/edge_partial.jpg"
+    },
+    {
+      "category": "high_density",
+      "path": "reports/dataset_audit_contact_sheets/high_density.jpg"
+    },
+    {
+      "category": "crowd",
+      "path": "reports/dataset_audit_contact_sheets/crowd.jpg",
+      "images": 16,
+      "segmentation_mask_regions": 16,
+      "bbox_fallback_regions": 0
+    }
+  ],
+  "perceptual_cluster_sheets": [
+    {
+      "cluster_id": "phash-00001",
+      "member_count": 3,
+      "sheets": [
+        "reports/dataset_audit_contact_sheets/phash_clusters/phash-00001_p01.jpg"
+      ]
+    },
+    {
+      "cluster_id": "phash-00002",
+      "member_count": 2,
+      "sheets": [
+        "reports/dataset_audit_contact_sheets/phash_clusters/phash-00002_p01.jpg"
+      ]
+    },
+    {
+      "cluster_id": "phash-00003",
+      "member_count": 2,
+      "sheets": [
+        "reports/dataset_audit_contact_sheets/phash_clusters/phash-00003_p01.jpg"
+      ]
+    },
+    {
+      "cluster_id": "phash-00004",
+      "member_count": 2,
+      "sheets": [
+        "reports/dataset_audit_contact_sheets/phash_clusters/phash-00004_p01.jpg"
+      ]
+    },
+    {
+      "cluster_id": "phash-00005",
+      "member_count": 2,
+      "sheets": [
+        "reports/dataset_audit_contact_sheets/phash_clusters/phash-00005_p01.jpg"
+      ]
+    },
+    {
+      "cluster_id": "phash-00006",
+      "member_count": 2,
+      "sheets": [
+        "reports/dataset_audit_contact_sheets/phash_clusters/phash-00006_p01.jpg"
+      ]
+    }
+  ],
+  "raw_vs_prepared": {
+    "selection_matches_current_preparer": true,
+    "labels_match_current_preparer": true,
+    "conversion_matches_current_preparer": true,
+    "expected_counts": {
+      "train": 64115,
+      "val": 1346,
+      "test": 1347
+    },
+    "actual_counts": {
+      "train": 64115,
+      "val": 1346,
+      "test": 1347
+    },
+    "missing_expected_images": {
+      "train": [],
+      "val": [],
+      "test": []
+    },
+    "unexpected_images": {
+      "train": [],
+      "val": [],
+      "test": []
+    },
+    "raw_images_without_usable_person": 56479,
+    "raw_empty_images_copied_to_prepared": 0,
+    "prepared_split_overlap": {
+      "train_val": 0,
+      "train_test": 0,
+      "val_test": 0
+    },
+    "label_comparison": {
+      "coordinate_tolerance": 1e-06,
+      "label_parse_issue_count": 0,
+      "label_parse_issue_examples": [],
+      "missing_expected_box_count": 0,
+      "extra_actual_box_count": 0,
+      "mismatched_box_pair_count": 0,
+      "splits": {
+        "train": {
+          "expected_images": 64115,
+          "actual_images": 64115,
+          "images_checked": 64115,
+          "expected_object_count": 257252,
+          "actual_object_count": 257252,
+          "images_with_object_count_mismatch": 0,
+          "images_with_box_mismatch": 0,
+          "missing_expected_box_count": 0,
+          "extra_actual_box_count": 0,
+          "mismatched_box_pair_count": 0,
+          "examples": []
+        },
+        "val": {
+          "expected_images": 1346,
+          "actual_images": 1346,
+          "images_checked": 1346,
+          "expected_object_count": 5427,
+          "actual_object_count": 5427,
+          "images_with_object_count_mismatch": 0,
+          "images_with_box_mismatch": 0,
+          "missing_expected_box_count": 0,
+          "extra_actual_box_count": 0,
+          "mismatched_box_pair_count": 0,
+          "examples": []
+        },
+        "test": {
+          "expected_images": 1347,
+          "actual_images": 1347,
+          "images_checked": 1347,
+          "expected_object_count": 5350,
+          "actual_object_count": 5350,
+          "images_with_object_count_mismatch": 0,
+          "images_with_box_mismatch": 0,
+          "missing_expected_box_count": 0,
+          "extra_actual_box_count": 0,
+          "mismatched_box_pair_count": 0,
+          "examples": []
+        }
+      }
+    }
+  },
+  "manual_review": {
+    "status": "complete",
+    "category_contact_sheets": [
+      {
+        "category": "random",
+        "path": "reports/dataset_audit_contact_sheets/random.jpg",
+        "review_status": "reviewed",
+        "notes": "Varied scenes and scales; sampled person boxes align visually and no corrupt image or label rendering is apparent."
+      },
+      {
+        "category": "tiny",
+        "path": "reports/dataset_audit_contact_sheets/tiny.jpg",
+        "review_status": "reviewed",
+        "notes": "Very small people are frequently only a few pixels but boxes land on plausible person locations; these examples remain inherently hard to verify precisely."
+      },
+      {
+        "category": "edge_partial",
+        "path": "reports/dataset_audit_contact_sheets/edge_partial.jpg",
+        "review_status": "reviewed",
+        "notes": "Partial and out-of-frame people are common. Some extreme boxes show only limited visible body evidence and should be considered explicitly in dataset_v2 policy; the control labels remain unchanged."
+      },
+      {
+        "category": "high_density",
+        "path": "reports/dataset_audit_contact_sheets/high_density.jpg",
+        "review_status": "reviewed",
+        "notes": "Dense scenes contain many plausible person boxes, while additional crowd/background people are not represented by ordinary YOLO boxes; this supports the documented crowd-risk review."
+      },
+      {
+        "category": "crowd",
+        "path": "reports/dataset_audit_contact_sheets/crowd.jpg",
+        "review_status": "reviewed",
+        "notes": "All 16 displayed crowd regions decoded from COCO RLE segmentation masks (orange), with zero bbox fallbacks. Masks expose substantial real-person content omitted from ordinary green YOLO boxes."
+      }
+    ],
+    "phash_cluster_decisions": [
+      "duplicate",
+      "near_duplicate_same_scene",
+      "similar_not_duplicate",
+      "uncertain"
+    ],
+    "phash_clusters": [
+      {
+        "cluster_id": "phash-00001",
+        "paths": [
+          "images/test/000000020333.jpg",
+          "images/train/000000062297.jpg",
+          "images/train/000000119502.jpg"
+        ],
+        "decision": "near_duplicate_same_scene",
+        "notes": "Same child and composition in three color/processing variants across train and test."
+      },
+      {
+        "cluster_id": "phash-00002",
+        "paths": [
+          "images/test/000000375493.jpg",
+          "images/train/000000443296.jpg"
+        ],
+        "decision": "similar_not_duplicate",
+        "notes": "False pHash candidate: a woman in a dark night scene versus people on a daylight tennis court."
+      },
+      {
+        "cluster_id": "phash-00003",
+        "paths": [
+          "images/test/000000465129.jpg",
+          "images/train/000000535889.jpg"
+        ],
+        "decision": "near_duplicate_same_scene",
+        "notes": "Same kitchen, person, pose, and framing across train and test."
+      },
+      {
+        "cluster_id": "phash-00004",
+        "paths": [
+          "images/train/000000080010.jpg",
+          "images/val/000000140556.jpg"
+        ],
+        "decision": "near_duplicate_same_scene",
+        "notes": "Same four road workers and composition across train and validation."
+      },
+      {
+        "cluster_id": "phash-00005",
+        "paths": [
+          "images/train/000000214648.jpg",
+          "images/val/000000129062.jpg"
+        ],
+        "decision": "near_duplicate_same_scene",
+        "notes": "Same storefront scene with a small framing shift across train and validation."
+      },
+      {
+        "cluster_id": "phash-00006",
+        "paths": [
+          "images/train/000000334631.jpg",
+          "images/val/000000423123.jpg"
+        ],
+        "decision": "near_duplicate_same_scene",
+        "notes": "Same indoor group and framing across train and validation; validation includes one additional visible-person box."
+      }
+    ]
+  },
+  "dataset_v2_recommendations": {
+    "control_coco_person": "preserve unchanged",
+    "exact_leakage": {
+      "cross_split_group_count": 0,
+      "action": "apply the resolution manifest only to dataset_v2"
+    },
+    "perceptual_leakage": {
+      "review_status": "complete",
+      "reviewed_duplicate_or_same_scene_clusters": 5,
+      "action": "group each reviewed duplicate/same-scene cluster into one split when dataset_v2 is materialized"
+    },
+    "crowd": "choose exclusion, ignore-region handling, or manually verified positive labels before training dataset_v2",
+    "negatives": "consider COCO images without person only in dataset_v2, alongside domain positives and hard negatives",
+    "split": "rebuild dataset_v2 with source/scene/time-block grouping and a frozen test",
+    "training_started": false
+  },
+  "evidence_files": {
+    "exact_resolution_manifest": "reports/dataset_audit_exact_resolution.json",
+    "phash_edges_csv": "reports/dataset_audit_phash_edges.csv",
+    "phash_clusters": "reports/dataset_audit_phash_clusters.json",
+    "manual_review": "reports/dataset_audit_manual_review.json"
   }
 }

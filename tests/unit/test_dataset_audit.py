@@ -12,13 +12,17 @@ from scripts.prepare_coco_person import convert_split
 from vision_track.dataset_audit import (
     PreparedImageRecord,
     audit_dataset,
+    build_exact_resolution_manifest,
+    build_manual_review_evidence,
     cross_split_duplicate_summary,
     expected_prepared_splits,
     load_coco_person_index,
     load_prepared_records,
     numeric_summary,
     render_audit_markdown,
+    validate_coco_inputs,
     write_annotation_contact_sheet,
+    write_crowd_contact_sheet,
 )
 
 
@@ -80,6 +84,10 @@ def _prepared_fixture(tmp_path: Path) -> tuple[Path, Path]:
         [4, 5],
         [_person(3, 4), _person(4, 5)],
     )
+    for image_id in (1, 2, 3):
+        _write_image(raw / "train2017" / f"{image_id:012d}.jpg", 40 + image_id)
+    for image_id in (4, 5):
+        _write_image(raw / "val2017" / f"{image_id:012d}.jpg", 40 + image_id)
     train_index = load_coco_person_index(
         raw / "annotations" / "instances_train2017.json"
     )
@@ -210,6 +218,171 @@ def test_perceptual_duplicate_leakage_uses_hamming_distance(tmp_path: Path) -> N
     assert duplicates["exact_cross_split_group_count"] == 0
     assert duplicates["perceptual_hash"]["cross_split_pair_count"] == 1
     assert duplicates["perceptual_hash"]["examples"][0]["hamming_distance"] == 2
+
+
+def test_perceptual_machine_evidence_is_not_truncated_and_is_clustered(
+    tmp_path: Path,
+) -> None:
+    records = [
+        PreparedImageRecord(
+            "train" if index % 2 == 0 else "val",
+            f"images/{'train' if index % 2 == 0 else 'val'}/{index}.jpg",
+            tmp_path / f"{index}.jpg",
+            1,
+            1,
+            (),
+            f"sha-{index}",
+            0,
+        )
+        for index in range(22)
+    ]
+
+    duplicates = cross_split_duplicate_summary(records, perceptual_distance=0)
+    phash = duplicates["perceptual_hash"]
+
+    assert phash["cross_split_pair_count"] == 121
+    assert len(phash["edges"]) == 121
+    assert len(phash["examples"]) == 100
+    assert phash["machine_evidence_truncated"] is False
+    assert phash["cluster_count"] == 1
+    assert len(phash["clusters"][0]["paths"]) == 22
+
+
+def test_exact_resolution_prefers_test_then_smallest_image_id(tmp_path: Path) -> None:
+    records = [
+        PreparedImageRecord(
+            split,
+            path,
+            tmp_path / Path(path).name,
+            1,
+            1,
+            (),
+            "same",
+            0,
+        )
+        for split, path in (
+            ("train", "images/train/000000000001.jpg"),
+            ("test", "images/test/000000000009.jpg"),
+            ("test", "images/test/000000000002.jpg"),
+        )
+    ]
+
+    manifest = build_exact_resolution_manifest(cross_split_duplicate_summary(records))
+
+    assert manifest["group_count"] == 1
+    assert manifest["groups"][0]["keep"] == "images/test/000000000002.jpg"
+    assert manifest["control_dataset_mutated"] is False
+
+
+def test_manual_review_requires_categories_and_resolved_phash_clusters() -> None:
+    sheets = [{"category": "random", "path": "reports/random.jpg"}]
+    clusters = [{"cluster_id": "phash-00001", "paths": ["a", "b"]}]
+
+    pending = build_manual_review_evidence(sheets, clusters)
+    complete = build_manual_review_evidence(
+        sheets,
+        clusters,
+        {
+            "category_contact_sheets": [
+                {
+                    "category": "random",
+                    "review_status": "reviewed",
+                    "notes": "checked",
+                }
+            ],
+            "phash_clusters": [
+                {
+                    "cluster_id": "phash-00001",
+                    "decision": "similar_not_duplicate",
+                    "notes": "different scene",
+                }
+            ],
+        },
+    )
+
+    assert pending["status"] == "pending"
+    assert complete["status"] == "complete"
+
+
+def test_input_validation_decodes_all_expected_images(tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    _write_coco(
+        raw / "annotations" / "instances_train2017.json",
+        [1],
+        [_person(1, 1)],
+    )
+    _write_coco(
+        raw / "annotations" / "instances_val2017.json",
+        [2],
+        [_person(2, 2)],
+    )
+    _write_image(raw / "train2017" / "000000000001.jpg", 80)
+    _write_image(raw / "val2017" / "000000000002.jpg", 120)
+    train = load_coco_person_index(
+        raw / "annotations" / "instances_train2017.json"
+    )
+    val = load_coco_person_index(raw / "annotations" / "instances_val2017.json")
+
+    validation = validate_coco_inputs(raw, train, val)
+
+    assert validation["status"] == "confirmed"
+    assert validation["extracted_images"]["train2017"]["decode_failure_count"] == 0
+    assert validation["archives"]["train2017.zip"]["status"] == "not_available"
+
+
+def test_complete_audit_fails_when_raw_image_dimensions_do_not_match(
+    tmp_path: Path,
+) -> None:
+    raw, prepared = _prepared_fixture(tmp_path)
+    wrong_size = np.zeros((12, 12, 3), dtype=np.uint8)
+    assert cv2.imwrite(str(raw / "train2017" / "000000000001.jpg"), wrong_size)
+
+    report = audit_dataset(raw, prepared)
+
+    assert report["status"] == "failed_integrity"
+    assert (
+        report["input_validation"]["extracted_images"]["train2017"][
+            "dimension_mismatch_count"
+        ]
+        == 1
+    )
+
+
+def test_crowd_sheet_prefers_segmentation_mask(tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    normal = _person(1, 1)
+    crowd = _person(2, 1, crowd=1)
+    crowd["segmentation"] = {"size": [48, 64], "counts": [0, 10, 3062]}
+    _write_coco(
+        raw / "annotations" / "instances_train2017.json",
+        [1],
+        [normal, crowd],
+    )
+    index = load_coco_person_index(
+        raw / "annotations" / "instances_train2017.json"
+    )
+    image_path = tmp_path / "000000000001.jpg"
+    _write_image(image_path, 80)
+    record = PreparedImageRecord(
+        "train",
+        "images/train/000000000001.jpg",
+        image_path,
+        64,
+        48,
+        ((0.34375, 0.47916667, 0.375, 0.70833333),),
+        "sha",
+        0,
+    )
+
+    result = write_crowd_contact_sheet(
+        [record],
+        {"train": index},
+        tmp_path / "crowd.jpg",
+    )
+
+    assert result is not None
+    assert result["segmentation_mask_regions"] == 1
+    assert result["bbox_fallback_regions"] == 0
 
 
 def test_complete_audit_proves_raw_empty_images_are_not_prepared(tmp_path: Path) -> None:

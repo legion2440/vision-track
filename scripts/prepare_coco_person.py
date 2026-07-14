@@ -123,6 +123,11 @@ def main() -> None:
         help="Use archives or extracted COCO files already present in --raw-dir",
     )
     parser.add_argument(
+        "--skip-extract",
+        action="store_true",
+        help="Use already extracted COCO files without modifying --raw-dir",
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Replace an existing converted output directory",
@@ -133,10 +138,11 @@ def main() -> None:
     if not args.skip_download:
         for filename, url in COCO_URLS.items():
             download(url, archives / filename)
-    for filename in COCO_URLS:
-        archive = archives / filename
-        if archive.exists():
-            extract(archive, args.raw_dir)
+    if not args.skip_extract:
+        for filename in COCO_URLS:
+            archive = archives / filename
+            if archive.exists():
+                extract(archive, args.raw_dir)
 
     train_images, train_annotations = load_coco(
         args.raw_dir / "annotations" / "instances_train2017.json"
