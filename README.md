@@ -234,7 +234,9 @@ python scripts/evaluate_model.py \
 Training never replaces the runtime checkpoint. After evaluation and model
 selection, promotion is a separate explicit step with mandatory source,
 destination, and expected SHA-256. The command verifies the one-class person
-detector, stages it beside the destination, and publishes it atomically:
+detector, runs a deterministic inference smoke on the staged checkpoint using
+the project model settings and the runtime-selected device (CUDA when
+available), and only then publishes it atomically:
 
 ```bash
 python scripts/promote_model.py \
