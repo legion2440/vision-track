@@ -177,9 +177,10 @@ python scripts/audit_dataset.py
 
 The audit writes JSON and Markdown reports, split-level person density,
 resolution and relative box distributions, proof of the current empty-image
-filter, cross-split SHA-256 and perceptual-hash leakage, and deterministic
-annotation contact sheets. It reports missing raw/prepared inputs explicitly
-instead of fabricating statistics. Domain collection follows
+filter, per-image expected/actual label integrity, cross-split SHA-256 and
+perceptual-hash leakage, and deterministic annotation contact sheets. It
+reports missing raw/prepared inputs explicitly instead of fabricating
+statistics. Domain collection follows
 [`docs/annotation_policy.md`](docs/annotation_policy.md) and the grouped split
 protocol in [`docs/dataset_split_protocol.md`](docs/dataset_split_protocol.md).
 

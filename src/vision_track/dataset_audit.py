@@ -104,6 +104,7 @@ class CocoIndex:
     source_split: str
     images: dict[int, dict]
     boxes_by_image: dict[int, tuple[tuple[float, float, float, float], ...]]
+    crowd_annotations_by_image: dict[int, int]
     summary: dict
 
     @property
@@ -125,6 +126,7 @@ def load_coco_person_index(annotation_path: str | Path) -> CocoIndex:
         defaultdict(list)
     )
     crowd_annotations = 0
+    crowd_annotations_by_image: dict[int, int] = defaultdict(int)
     invalid_annotations = 0
     person_annotations = 0
     for annotation in payload["annotations"]:
@@ -135,6 +137,7 @@ def load_coco_person_index(annotation_path: str | Path) -> CocoIndex:
         any_person_images.add(image_id)
         if annotation.get("iscrowd", 0):
             crowd_annotations += 1
+            crowd_annotations_by_image[image_id] += 1
             continue
         normalized = _valid_coco_box(annotation, images[image_id])
         if normalized is None:
@@ -151,6 +154,12 @@ def load_coco_person_index(annotation_path: str | Path) -> CocoIndex:
         (int(image["width"]), int(image["height"])) for image in images.values()
     ]
     all_boxes = [box for boxes in boxes_by_image.values() for box in boxes]
+    crowd_image_ids = set(crowd_annotations_by_image)
+    retained_crowd_image_ids = crowd_image_ids & boxes_by_image.keys()
+    retained_crowd_annotations = sum(
+        crowd_annotations_by_image[image_id]
+        for image_id in retained_crowd_image_ids
+    )
     source_split = path.stem.removeprefix("instances_")
     summary = {
         "source_split": source_split,
@@ -158,6 +167,12 @@ def load_coco_person_index(annotation_path: str | Path) -> CocoIndex:
         "person_annotations": person_annotations,
         "usable_person_annotations": len(all_boxes),
         "crowd_annotations_excluded": crowd_annotations,
+        "images_with_crowd_annotations": len(crowd_image_ids),
+        "retained_images_with_normal_person_and_crowd": len(
+            retained_crowd_image_ids
+        ),
+        "retained_crowd_annotations_unlabeled": retained_crowd_annotations,
+        "unlabeled_crowd_positive_risk": bool(retained_crowd_image_ids),
         "invalid_person_annotations_excluded": invalid_annotations,
         "images_with_any_person_annotation": len(any_person_images),
         "images_with_usable_person": len(boxes_by_image),
@@ -178,7 +193,13 @@ def load_coco_person_index(annotation_path: str | Path) -> CocoIndex:
         ),
         "boxes": _box_summary(all_boxes),
     }
-    return CocoIndex(source_split, images, boxes_by_image, summary)
+    return CocoIndex(
+        source_split,
+        images,
+        boxes_by_image,
+        dict(crowd_annotations_by_image),
+        summary,
+    )
 
 
 def summarize_coco_selection(index: CocoIndex, image_ids: Sequence[int]) -> dict:
@@ -188,9 +209,19 @@ def summarize_coco_selection(index: CocoIndex, image_ids: Sequence[int]) -> dict
         (int(index.images[image_id]["width"]), int(index.images[image_id]["height"]))
         for image_id in selected
     ]
+    selected_crowd_images = [
+        image_id
+        for image_id in selected
+        if image_id in index.crowd_annotations_by_image
+    ]
     return {
         "images": len(selected),
         "objects": len(boxes),
+        "images_with_unlabeled_crowd_regions": len(selected_crowd_images),
+        "unlabeled_crowd_annotations": sum(
+            index.crowd_annotations_by_image[image_id]
+            for image_id in selected_crowd_images
+        ),
         "people_per_image": numeric_summary(
             len(index.boxes_by_image[image_id]) for image_id in selected
         ),
@@ -555,6 +586,9 @@ def compare_raw_and_prepared(
     val_index: CocoIndex,
     expected_ids: dict[str, list[int]],
     prepared_records: Sequence[PreparedImageRecord],
+    *,
+    box_tolerance: float = 1e-6,
+    prepared_issues: Sequence[str] = (),
 ) -> dict:
     indexes = {"train": train_index, "val": val_index, "test": val_index}
     expected_names = {
@@ -572,6 +606,14 @@ def compare_raw_and_prepared(
         }
         for split in DEFAULT_SPLITS
     }
+    actual_records = {
+        split: {
+            Path(record.relative_path).name: record
+            for record in prepared_records
+            if record.split == split
+        }
+        for split in DEFAULT_SPLITS
+    }
     raw_empty_names = {
         str(image["file_name"])
         for index in (train_index, val_index)
@@ -579,10 +621,118 @@ def compare_raw_and_prepared(
         if image_id not in index.boxes_by_image
     }
     all_actual = set().union(*actual_names.values())
+    label_splits: dict[str, dict] = {}
+    total_missing_boxes = 0
+    total_extra_boxes = 0
+    total_mismatched_box_pairs = 0
+    for split in DEFAULT_SPLITS:
+        index = indexes[split]
+        expected_by_name = {
+            str(index.images[image_id]["file_name"]): index.boxes_by_image[image_id]
+            for image_id in expected_ids[split]
+        }
+        missing_boxes = 0
+        extra_boxes = 0
+        mismatched_box_pairs = 0
+        count_mismatch_images = 0
+        box_mismatch_images = 0
+        checked_images = 0
+        examples: list[dict] = []
+        for file_name, expected_boxes in expected_by_name.items():
+            record = actual_records[split].get(file_name)
+            actual_boxes = record.boxes if record is not None else ()
+            if record is not None:
+                checked_images += 1
+            unmatched_actual = list(actual_boxes)
+            unmatched_expected: list[tuple[float, float, float, float]] = []
+            for expected_box in expected_boxes:
+                match_index = next(
+                    (
+                        candidate_index
+                        for candidate_index, actual_box in enumerate(unmatched_actual)
+                        if all(
+                            abs(expected_value - actual_value) <= box_tolerance
+                            for expected_value, actual_value in zip(
+                                expected_box,
+                                actual_box,
+                            )
+                        )
+                    ),
+                    None,
+                )
+                if match_index is None:
+                    unmatched_expected.append(expected_box)
+                else:
+                    unmatched_actual.pop(match_index)
+            if len(expected_boxes) != len(actual_boxes):
+                count_mismatch_images += 1
+            if unmatched_expected or unmatched_actual:
+                box_mismatch_images += 1
+                missing_boxes += len(unmatched_expected)
+                extra_boxes += len(unmatched_actual)
+                mismatched_box_pairs += min(
+                    len(unmatched_expected),
+                    len(unmatched_actual),
+                )
+                if len(examples) < 100:
+                    examples.append(
+                        {
+                            "image": file_name,
+                            "image_missing": record is None,
+                            "expected_object_count": len(expected_boxes),
+                            "actual_object_count": len(actual_boxes),
+                            "missing_expected_boxes": unmatched_expected,
+                            "extra_actual_boxes": unmatched_actual,
+                        }
+                    )
+        for file_name in actual_names[split] - expected_names[split]:
+            record = actual_records[split][file_name]
+            if record.boxes:
+                extra_boxes += len(record.boxes)
+                box_mismatch_images += 1
+                if len(examples) < 100:
+                    examples.append(
+                        {
+                            "image": file_name,
+                            "image_missing": False,
+                            "expected_object_count": 0,
+                            "actual_object_count": len(record.boxes),
+                            "missing_expected_boxes": [],
+                            "extra_actual_boxes": record.boxes,
+                        }
+                    )
+        total_missing_boxes += missing_boxes
+        total_extra_boxes += extra_boxes
+        total_mismatched_box_pairs += mismatched_box_pairs
+        label_splits[split] = {
+            "expected_images": len(expected_by_name),
+            "actual_images": len(actual_records[split]),
+            "images_checked": checked_images,
+            "expected_object_count": sum(
+                len(boxes) for boxes in expected_by_name.values()
+            ),
+            "actual_object_count": sum(
+                len(record.boxes) for record in actual_records[split].values()
+            ),
+            "images_with_object_count_mismatch": count_mismatch_images,
+            "images_with_box_mismatch": box_mismatch_images,
+            "missing_expected_box_count": missing_boxes,
+            "extra_actual_box_count": extra_boxes,
+            "mismatched_box_pair_count": mismatched_box_pairs,
+            "examples": examples,
+        }
+    selection_matches = all(
+        actual_names[split] == expected_names[split] for split in DEFAULT_SPLITS
+    )
+    labels_match = (
+        total_missing_boxes == 0
+        and total_extra_boxes == 0
+        and not prepared_issues
+    )
     return {
-        "selection_matches_current_preparer": all(
-            actual_names[split] == expected_names[split] for split in DEFAULT_SPLITS
-        ),
+        "selection_matches_current_preparer": selection_matches,
+        "labels_match_current_preparer": labels_match,
+        "conversion_matches_current_preparer": selection_matches and labels_match,
         "expected_counts": {
             split: len(names) for split, names in expected_names.items()
         },
@@ -601,6 +751,15 @@ def compare_raw_and_prepared(
             "train_val": len(actual_names["train"] & actual_names["val"]),
             "train_test": len(actual_names["train"] & actual_names["test"]),
             "val_test": len(actual_names["val"] & actual_names["test"]),
+        },
+        "label_comparison": {
+            "coordinate_tolerance": box_tolerance,
+            "label_parse_issue_count": len(prepared_issues),
+            "label_parse_issue_examples": list(prepared_issues[:100]),
+            "missing_expected_box_count": total_missing_boxes,
+            "extra_actual_box_count": total_extra_boxes,
+            "mismatched_box_pair_count": total_mismatched_box_pairs,
+            "splits": label_splits,
         },
     }
 
@@ -647,6 +806,19 @@ def render_audit_markdown(report: dict) -> str:
             )
         lines.append("")
         lines.append(
+            "| Source split | Images with crowd | Retained normal+crowd images | "
+            "Unlabeled retained crowd annotations |"
+        )
+        lines.append("|---|---:|---:|---:|")
+        for split in ("train2017", "val2017"):
+            item = raw[split]
+            lines.append(
+                f"| {split} | {item['images_with_crowd_annotations']} "
+                f"| {item['retained_images_with_normal_person_and_crowd']} "
+                f"| {item['retained_crowd_annotations_unlabeled']} |"
+            )
+        lines.append("")
+        lines.append(
             "| Source split | People/image positive p50 / p95 | Median W×H | "
             "Median image AR | Bbox area p05 / p50 / p95 | Bboxes <1% | "
             "Edge-touching boxes |"
@@ -684,16 +856,18 @@ def render_audit_markdown(report: dict) -> str:
         lines.append("")
         lines.append(
             "| Split | Selected images | Objects | People/image p50 / p95 | "
-            "Bbox area p50 |"
+            "Bbox area p50 | Images / annotations with unlabeled crowd |"
         )
-        lines.append("|---|---:|---:|---:|---:|")
+        lines.append("|---|---:|---:|---:|---:|---:|")
         for split in DEFAULT_SPLITS:
             item = expected[split]
             people = item["people_per_image"]
             lines.append(
                 f"| {split} | {item['images']} | {item['objects']} "
                 f"| {number(people['p50'])} / {number(people['p95'])} "
-                f"| {percent(item['boxes']['area_fraction']['p50'])} |"
+                f"| {percent(item['boxes']['area_fraction']['p50'])} "
+                f"| {item['images_with_unlabeled_crowd_regions']} / "
+                f"{item['unlabeled_crowd_annotations']} |"
             )
         lines.append("")
     prepared = report.get("prepared_dataset")
@@ -706,6 +880,36 @@ def render_audit_markdown(report: dict) -> str:
             lines.append(
                 f"| {split} | {item['images']} | {item['images_without_people']} "
                 f"| {item['objects']} |"
+            )
+        lines.append("")
+    comparison = report.get("raw_vs_prepared")
+    if comparison:
+        labels = comparison["label_comparison"]
+        lines.extend(["## Raw vs prepared integrity", ""])
+        lines.append(
+            f"- Image selection matches current preparer: "
+            f"**{comparison['selection_matches_current_preparer']}**"
+        )
+        lines.append(
+            f"- Labels match current preparer: "
+            f"**{comparison['labels_match_current_preparer']}**"
+        )
+        lines.append(
+            f"- Missing expected boxes: {labels['missing_expected_box_count']}"
+        )
+        lines.append(f"- Extra actual boxes: {labels['extra_actual_box_count']}")
+        lines.append(
+            f"- Coordinate-mismatched box pairs: "
+            f"{labels['mismatched_box_pair_count']}"
+        )
+        lines.append(f"- Coordinate tolerance: {labels['coordinate_tolerance']}")
+        lines.append("")
+    warnings = report.get("warnings", [])
+    if warnings:
+        lines.extend(["## Warnings", ""])
+        for warning in warnings:
+            lines.append(
+                f"- **{warning['code']}**: {warning['message']}"
             )
         lines.append("")
     lines.extend(
@@ -743,6 +947,7 @@ def audit_dataset(
     seed: int = 42,
     validation_fraction: float = 0.5,
     perceptual_distance: int = 6,
+    box_tolerance: float = 1e-6,
 ) -> dict:
     raw_root = Path(raw_dir)
     prepared_root = Path(prepared_dir)
@@ -775,6 +980,7 @@ def audit_dataset(
             "negative_images_preserved": False,
         },
         "unexecuted_checks": [],
+        "warnings": [],
     }
     if raw_available:
         train_index = load_coco_person_index(train_annotation)
@@ -783,6 +989,31 @@ def audit_dataset(
             "train2017": train_index.summary,
             "val2017": val_index.summary,
         }
+        retained_crowd_images = sum(
+            index.summary["retained_images_with_normal_person_and_crowd"]
+            for index in (train_index, val_index)
+        )
+        retained_crowd_annotations = sum(
+            index.summary["retained_crowd_annotations_unlabeled"]
+            for index in (train_index, val_index)
+        )
+        if retained_crowd_images:
+            report["warnings"].append(
+                {
+                    "severity": "warning",
+                    "code": "unlabeled_crowd_positive_risk",
+                    "retained_images": retained_crowd_images,
+                    "unlabeled_crowd_annotations": retained_crowd_annotations,
+                    "message": (
+                        "The current preparer retains images containing normal "
+                        "person boxes and iscrowd regions, but does not write the "
+                        "crowd regions to YOLO labels. Real crowded people therefore "
+                        "become unlabeled background and may suppress recall. Do not "
+                        "choose exclusion, ignore-region handling, or manual review "
+                        "until the dataset policy decision is made."
+                    ),
+                }
+            )
         expected_ids = expected_prepared_splits(
             train_index,
             val_index,
@@ -835,6 +1066,8 @@ def audit_dataset(
                 val_index,
                 expected_ids,
                 records,
+                box_tolerance=box_tolerance,
+                prepared_issues=prepared_summary["issues"],
             )
     else:
         report["unexecuted_checks"].extend(

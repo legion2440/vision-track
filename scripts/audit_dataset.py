@@ -51,6 +51,7 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--validation-fraction", type=float, default=0.5)
     parser.add_argument("--perceptual-distance", type=int, default=6)
+    parser.add_argument("--box-tolerance", type=float, default=1e-6)
     args = parser.parse_args()
 
     report = audit_dataset(
@@ -60,6 +61,7 @@ def main() -> int:
         seed=args.seed,
         validation_fraction=args.validation_fraction,
         perceptual_distance=args.perceptual_distance,
+        box_tolerance=args.box_tolerance,
     )
     report["raw_dir"] = _display_path(args.raw_dir)
     report["prepared_dir"] = _display_path(args.dataset)

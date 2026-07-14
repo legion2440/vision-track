@@ -26,6 +26,15 @@
       "reason": "image files for the materialized splits are missing"
     }
   ],
+  "warnings": [
+    {
+      "severity": "warning",
+      "code": "unlabeled_crowd_positive_risk",
+      "retained_images": 5439,
+      "unlabeled_crowd_annotations": 5439,
+      "message": "The current preparer retains images containing normal person boxes and iscrowd regions, but does not write the crowd regions to YOLO labels. Real crowded people therefore become unlabeled background and may suppress recall. Do not choose exclusion, ignore-region handling, or manual review until the dataset policy decision is made."
+    }
+  ],
   "raw_coco": {
     "train2017": {
       "source_split": "train2017",
@@ -33,6 +42,10 @@
       "person_annotations": 262465,
       "usable_person_annotations": 257252,
       "crowd_annotations_excluded": 5212,
+      "images_with_crowd_annotations": 5212,
+      "retained_images_with_normal_person_and_crowd": 5212,
+      "retained_crowd_annotations_unlabeled": 5212,
+      "unlabeled_crowd_positive_risk": true,
       "invalid_person_annotations_excluded": 1,
       "images_with_any_person_annotation": 64115,
       "images_with_usable_person": 64115,
@@ -152,6 +165,10 @@
       "person_annotations": 11004,
       "usable_person_annotations": 10777,
       "crowd_annotations_excluded": 227,
+      "images_with_crowd_annotations": 227,
+      "retained_images_with_normal_person_and_crowd": 227,
+      "retained_crowd_annotations_unlabeled": 227,
+      "unlabeled_crowd_positive_risk": true,
       "invalid_person_annotations_excluded": 0,
       "images_with_any_person_annotation": 2693,
       "images_with_usable_person": 2693,
@@ -272,6 +289,8 @@
     "train": {
       "images": 64115,
       "objects": 257252,
+      "images_with_unlabeled_crowd_regions": 5212,
+      "unlabeled_crowd_annotations": 5212,
       "people_per_image": {
         "count": 64115,
         "min": 1.0,
@@ -372,6 +391,8 @@
     "val": {
       "images": 1346,
       "objects": 5427,
+      "images_with_unlabeled_crowd_regions": 117,
+      "unlabeled_crowd_annotations": 117,
       "people_per_image": {
         "count": 1346,
         "min": 1.0,
@@ -472,6 +493,8 @@
     "test": {
       "images": 1347,
       "objects": 5350,
+      "images_with_unlabeled_crowd_regions": 110,
+      "unlabeled_crowd_annotations": 110,
       "people_per_image": {
         "count": 1347,
         "min": 1.0,

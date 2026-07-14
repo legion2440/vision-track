@@ -13,6 +13,11 @@ Status: **partial**
 | train2017 | 118287 | 64115 | 54172 | 0 | 257252 | 5212 | 1 |
 | val2017 | 5000 | 2693 | 2307 | 0 | 10777 | 227 | 0 |
 
+| Source split | Images with crowd | Retained normal+crowd images | Unlabeled retained crowd annotations |
+|---|---:|---:|---:|
+| train2017 | 5212 | 5212 | 5212 |
+| val2017 | 227 | 227 | 227 |
+
 | Source split | People/image positive p50 / p95 | Median W×H | Median image AR | Bbox area p05 / p50 / p95 | Bboxes <1% | Edge-touching boxes |
 |---|---:|---:|---:|---:|---:|---:|
 | train2017 | 2.00 / 13.00 | 640×480 | 1.33 | 0.03% / 1.30% / 39.86% | 45.87% | 20.53% |
@@ -22,11 +27,15 @@ Status: **partial**
 
 The current converter selects only images with at least one usable, non-crowd person box. Images without such boxes are omitted rather than preserved as negative samples.
 
-| Split | Selected images | Objects | People/image p50 / p95 | Bbox area p50 |
-|---|---:|---:|---:|---:|
-| train | 64115 | 257252 | 2.00 / 13.00 | 1.30% |
-| val | 1346 | 5427 | 2.00 / 13.00 | 1.44% |
-| test | 1347 | 5350 | 2.00 / 13.00 | 1.39% |
+| Split | Selected images | Objects | People/image p50 / p95 | Bbox area p50 | Images / annotations with unlabeled crowd |
+|---|---:|---:|---:|---:|---:|
+| train | 64115 | 257252 | 2.00 / 13.00 | 1.30% | 5212 / 5212 |
+| val | 1346 | 5427 | 2.00 / 13.00 | 1.44% | 117 / 117 |
+| test | 1347 | 5350 | 2.00 / 13.00 | 1.39% | 110 / 110 |
+
+## Warnings
+
+- **unlabeled_crowd_positive_risk**: The current preparer retains images containing normal person boxes and iscrowd regions, but does not write the crowd regions to YOLO labels. Real crowded people therefore become unlabeled background and may suppress recall. Do not choose exclusion, ignore-region handling, or manual review until the dataset policy decision is made.
 
 ## Manual review still required
 

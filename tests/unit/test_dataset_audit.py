@@ -121,6 +121,33 @@ def test_raw_coco_audit_distinguishes_empty_and_excluded_people(tmp_path: Path) 
     assert index.summary["crowd_annotations_excluded"] == 1
 
 
+def test_raw_coco_audit_warns_when_retained_image_contains_crowd(
+    tmp_path: Path,
+) -> None:
+    raw = tmp_path / "raw"
+    annotation_path = raw / "annotations" / "instances_train2017.json"
+    _write_coco(
+        annotation_path,
+        [1],
+        [_person(1, 1), _person(2, 1, crowd=1)],
+    )
+    _write_coco(
+        raw / "annotations" / "instances_val2017.json",
+        [2],
+        [_person(3, 2)],
+    )
+
+    index = load_coco_person_index(annotation_path)
+    report = audit_dataset(raw, tmp_path / "prepared")
+
+    assert index.summary["images_with_crowd_annotations"] == 1
+    assert index.summary["retained_images_with_normal_person_and_crowd"] == 1
+    assert index.summary["retained_crowd_annotations_unlabeled"] == 1
+    assert index.summary["unlabeled_crowd_positive_risk"] is True
+    assert report["warnings"][0]["code"] == "unlabeled_crowd_positive_risk"
+    assert report["warnings"][0]["retained_images"] == 1
+
+
 def test_current_converter_skips_images_without_person_objects(tmp_path: Path) -> None:
     source = tmp_path / "source"
     _write_image(source / "positive.jpg", 80)
@@ -192,9 +219,34 @@ def test_complete_audit_proves_raw_empty_images_are_not_prepared(tmp_path: Path)
     assert report["status"] == "complete"
     assert report["preparer_empty_image_behavior"]["negative_images_preserved"] is False
     assert report["raw_vs_prepared"]["selection_matches_current_preparer"] is True
+    assert report["raw_vs_prepared"]["labels_match_current_preparer"] is True
+    assert report["raw_vs_prepared"]["conversion_matches_current_preparer"] is True
     assert report["raw_vs_prepared"]["raw_images_without_usable_person"] == 2
     assert report["raw_vs_prepared"]["raw_empty_images_copied_to_prepared"] == 0
     assert "Current preparer selection" in render_audit_markdown(report)
+
+
+def test_label_comparison_detects_missing_and_coordinate_mismatches(
+    tmp_path: Path,
+) -> None:
+    raw, prepared = _prepared_fixture(tmp_path)
+    train_label = next((prepared / "labels" / "train").glob("*.txt"))
+    train_label.write_text("0 0.5 0.5 0.375 0.70833333\n", encoding="utf-8")
+    val_label = next((prepared / "labels" / "val").glob("*.txt"))
+    val_label.unlink()
+
+    report = audit_dataset(raw, prepared)
+    comparison = report["raw_vs_prepared"]
+    labels = comparison["label_comparison"]
+
+    assert comparison["selection_matches_current_preparer"] is True
+    assert comparison["labels_match_current_preparer"] is False
+    assert comparison["conversion_matches_current_preparer"] is False
+    assert labels["missing_expected_box_count"] == 2
+    assert labels["extra_actual_box_count"] == 1
+    assert labels["mismatched_box_pair_count"] == 1
+    assert labels["splits"]["train"]["mismatched_box_pair_count"] == 1
+    assert labels["splits"]["val"]["images_with_object_count_mismatch"] == 1
 
 
 def test_missing_dataset_is_reported_without_fabricated_statistics(tmp_path: Path) -> None:
