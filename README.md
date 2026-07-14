@@ -196,22 +196,33 @@ The notebook covers source/license, split distribution, objects per image, resol
 
 ## Baseline and transfer learning
 
-Evaluate the pretrained YOLO26 nano model on validation data:
+Run the reproducible baseline-readiness stage:
 
 ```bash
-python scripts/evaluate_baseline.py \
-  --model yolo26n.pt \
-  --split val \
-  --output reports/baseline_val_metrics.json
+python scripts/run_baseline_stage.py --device cuda
 ```
 
-Train with validation after every epoch, early stopping, deterministic seed 42, and the parameters in `configs/app.yaml`:
+This command validates the unchanged control dataset, evaluates pretrained
+`yolo26n.pt` on the full validation split, records separate standard-evaluator
+and project-runtime-threshold metrics, and runs one epoch on deterministic
+256-train/64-val linked smoke lists. The smoke reloads and validates both
+`best.pt` and `last.pt`. Reports are written under `reports/baseline_runs/`;
+weights and Ultralytics run data stay under the Git-ignored
+`models/training_runs/` tree. The test split is not used by this stage.
+The latest completed readiness report is
+[`baseline_20260714T180333Z`](reports/baseline_runs/baseline_20260714T180333Z/report.md).
+
+Full A training is gated behind explicit confirmation. After separate
+approval, train with validation after every epoch, early stopping, seed 42,
+and the unchanged parameters in `configs/app.yaml`:
 
 ```bash
-python scripts/train.py --skip-final-test
+python scripts/train.py --device cuda --confirm-full-run
 ```
 
-During model development, use `--skip-final-test`. After thresholds, hyperparameters, pruning, and quantization choices are frozen, run the training/final evaluation workflow without that flag, or explicitly evaluate:
+The full-training command still does not use test. After thresholds,
+hyperparameters, pruning, and quantization choices are frozen, explicitly run
+the isolated final evaluation:
 
 ```bash
 python scripts/evaluate_model.py \

@@ -27,9 +27,8 @@ data/processed/coco_person/
 !data/demo/.gitkeep
 models/checkpoints/*.pt
 models/checkpoints/*.onnx
-!models/checkpoints/best.pt
-!models/checkpoints/best_quantized.onnx
 !models/checkpoints/config.yaml
+models/training_runs/
 !reports/performance_metrics.json
 reports/demo_results/*.png
 reports/demo_results/*.mp4

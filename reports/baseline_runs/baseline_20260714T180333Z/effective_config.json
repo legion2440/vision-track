@@ -1,0 +1,92 @@
+{
+  "run_id": "baseline_20260714T180333Z",
+  "seed": 42,
+  "source_config": "configs/app.yaml",
+  "source_config_sha256": "2133c814bddef611a3d0109c39ffae4836f2549446671ea06aaaab32278aa1ef",
+  "dataset_yaml": "data/processed/coco_person/dataset.yaml",
+  "dataset_yaml_sha256": "e04de547f6480a9ebb36172bb67e13d63ad42fe833e85416d012494536ad3537",
+  "z0_evaluator_arguments": {
+    "data": "D:\\TSchool\\vision-track\\models\\training_runs\\baseline\\baseline_20260714T180333Z\\z0_dataset\\dataset.yaml",
+    "split": "val",
+    "imgsz": 640,
+    "batch": 16,
+    "conf": 0.001,
+    "iou": 0.7,
+    "classes": [
+      0
+    ],
+    "device": "0",
+    "plots": true,
+    "verbose": false,
+    "project": "D:\\TSchool\\vision-track\\models\\training_runs\\baseline\\baseline_20260714T180333Z\\ultralytics",
+    "name": "z0_val",
+    "exist_ok": false
+  },
+  "operational": {
+    "confidence": 0.35,
+    "nms_iou": 0.5,
+    "matching_iou": 0.5
+  },
+  "a_smoke_arguments": {
+    "data": "D:\\TSchool\\vision-track\\models\\training_runs\\baseline\\baseline_20260714T180333Z\\smoke_dataset\\dataset.yaml",
+    "epochs": 1,
+    "batch": 16,
+    "imgsz": 640,
+    "patience": 12,
+    "optimizer": "AdamW",
+    "lr0": 0.001,
+    "weight_decay": 0.0005,
+    "workers": 4,
+    "seed": 42,
+    "deterministic": true,
+    "device": "0",
+    "project": "D:\\TSchool\\vision-track\\models\\training_runs\\baseline\\baseline_20260714T180333Z\\ultralytics",
+    "name": "a_smoke",
+    "exist_ok": false,
+    "val": true,
+    "plots": true,
+    "save": true,
+    "classes": [
+      0
+    ],
+    "hsv_h": 0.015,
+    "hsv_s": 0.7,
+    "hsv_v": 0.4,
+    "degrees": 3.0,
+    "translate": 0.1,
+    "scale": 0.5,
+    "fliplr": 0.5,
+    "mosaic": 0.5
+  },
+  "full_a_arguments_not_executed": {
+    "data": "D:\\TSchool\\vision-track\\data\\processed\\coco_person\\dataset.yaml",
+    "epochs": 80,
+    "batch": 16,
+    "imgsz": 640,
+    "patience": 12,
+    "optimizer": "AdamW",
+    "lr0": 0.001,
+    "weight_decay": 0.0005,
+    "workers": 4,
+    "seed": 42,
+    "deterministic": true,
+    "device": "0",
+    "project": "D:\\TSchool\\vision-track\\models\\training_runs\\full_a",
+    "name": "a_full_seed42",
+    "exist_ok": false,
+    "val": true,
+    "plots": true,
+    "save": true,
+    "classes": [
+      0
+    ],
+    "hsv_h": 0.015,
+    "hsv_s": 0.7,
+    "hsv_v": 0.4,
+    "degrees": 3.0,
+    "translate": 0.1,
+    "scale": 0.5,
+    "fliplr": 0.5,
+    "mosaic": 0.5
+  }
+}

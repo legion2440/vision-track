@@ -1,0 +1,36 @@
+{
+  "captured_at": "2026-07-14T18:09:53.521048Z",
+  "python": {
+    "version": "3.13.5 (tags/v3.13.5:6cb20a2, Jun 11 2025, 16:15:46) [MSC v.1943 64 bit (AMD64)]",
+    "executable": "D:/TSchool/vision-track/.venv/Scripts/python.exe",
+    "required": "==3.13.*"
+  },
+  "platform": "Windows-11-10.0.26200-SP0",
+  "packages": {
+    "vision-track": "not-installed",
+    "torch": "2.12.1+cu130",
+    "torchvision": "0.27.1+cu130",
+    "ultralytics": "8.4.78",
+    "numpy": "2.4.6",
+    "opencv-python": "4.13.0.92",
+    "PyYAML": "6.0.3"
+  },
+  "cuda": {
+    "available": true,
+    "torch_cuda_version": "13.0",
+    "cudnn_version": 92000,
+    "device_count": 1,
+    "devices": [
+      {
+        "index": 0,
+        "name": "NVIDIA GeForce RTX 4080 Laptop GPU",
+        "capability": [
+          8,
+          9
+        ],
+        "total_memory_bytes": 12878086144
+      }
+    ]
+  },
+  "nvidia_smi": "NVIDIA GeForce RTX 4080 Laptop GPU, 610.47, 12282, 10298, P0, 31.33"
+}

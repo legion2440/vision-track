@@ -1,0 +1,507 @@
+{
+  "schema_version": 1,
+  "run_id": "baseline_20260714T180333Z",
+  "started_at": "2026-07-14T18:03:37.879823Z",
+  "status": "complete",
+  "scope": {
+    "z0_full_val": true,
+    "operational_metrics_full_val": true,
+    "a_smoke_only": true,
+    "full_a_training_started": false,
+    "test_used": false,
+    "confidence_sweep_performed": false,
+    "dataset_mutation_allowed": false
+  },
+  "dataset": {
+    "dataset_yaml": "D:/TSchool/vision-track/data/processed/coco_person/dataset.yaml",
+    "root": "D:/TSchool/vision-track/data/processed/coco_person",
+    "names": {
+      "0": "person"
+    },
+    "splits": {
+      "train": {
+        "image_dir": "D:/TSchool/vision-track/data/processed/coco_person/images/train",
+        "label_dir": "D:/TSchool/vision-track/data/processed/coco_person/labels/train",
+        "images": 64115,
+        "labels": 64115,
+        "objects": 257252
+      },
+      "val": {
+        "image_dir": "D:/TSchool/vision-track/data/processed/coco_person/images/val",
+        "label_dir": "D:/TSchool/vision-track/data/processed/coco_person/labels/val",
+        "images": 1346,
+        "labels": 1346,
+        "objects": 5427
+      },
+      "test": {
+        "image_dir": "D:/TSchool/vision-track/data/processed/coco_person/images/test",
+        "label_dir": "D:/TSchool/vision-track/data/processed/coco_person/labels/test",
+        "images": 1347,
+        "labels": 1347,
+        "objects": 5350
+      }
+    }
+  },
+  "dataset_fingerprint_before": {
+    "algorithm": "sha256(path,size,mtime_ns,full_text_content)",
+    "sha256": "9a30316c89b54d9770bafda8cc8610fde8e817fc601951d4cbb8435cb6e39ecf",
+    "file_count": 133618,
+    "total_bytes": 10906476341,
+    "content_hashed_files": 66810
+  },
+  "contamination": {
+    "control_dataset_unchanged": true,
+    "exact_sha_cross_split_groups": 0,
+    "reviewed_cross_split_same_scene_phash_clusters": 5,
+    "kept_in_control_splits": true,
+    "interpretation": "Z0/A control metrics include small known cross-split same-scene contamination; fixes belong only to dataset_v2 or a separate deduplicated materialization."
+  },
+  "environment": {
+    "captured_at": "2026-07-14T18:09:53.521048Z",
+    "python": {
+      "version": "3.13.5 (tags/v3.13.5:6cb20a2, Jun 11 2025, 16:15:46) [MSC v.1943 64 bit (AMD64)]",
+      "executable": "D:/TSchool/vision-track/.venv/Scripts/python.exe",
+      "required": "==3.13.*"
+    },
+    "platform": "Windows-11-10.0.26200-SP0",
+    "packages": {
+      "vision-track": "not-installed",
+      "torch": "2.12.1+cu130",
+      "torchvision": "0.27.1+cu130",
+      "ultralytics": "8.4.78",
+      "numpy": "2.4.6",
+      "opencv-python": "4.13.0.92",
+      "PyYAML": "6.0.3"
+    },
+    "cuda": {
+      "available": true,
+      "torch_cuda_version": "13.0",
+      "cudnn_version": 92000,
+      "device_count": 1,
+      "devices": [
+        {
+          "index": 0,
+          "name": "NVIDIA GeForce RTX 4080 Laptop GPU",
+          "capability": [
+            8,
+            9
+          ],
+          "total_memory_bytes": 12878086144
+        }
+      ]
+    },
+    "nvidia_smi": "NVIDIA GeForce RTX 4080 Laptop GPU, 610.47, 12282, 10298, P0, 31.33"
+  },
+  "device_smoke": {
+    "status": "passed",
+    "device_kind": "cuda",
+    "torch_device": "cuda:0",
+    "device_name": "NVIDIA GeForce RTX 4080 Laptop GPU",
+    "matrix_shape": [
+      512,
+      512
+    ],
+    "elapsed_ms": 149.0123000000949,
+    "finite": true
+  },
+  "model": {
+    "pretrained": {
+      "name": "yolo26n.pt",
+      "path": "yolo26n.pt",
+      "sha256": "9b09cc8bf347f0fc8a5f7657480587f25db09b34bf33b0652110fb03a8ad4fef"
+    }
+  },
+  "z0": {
+    "status": "complete",
+    "split": "val",
+    "images": 1346,
+    "objects": 5427,
+    "evaluator_confidence": 0.001,
+    "evaluator_nms_iou": 0.7,
+    "effective_arguments": {
+      "data": "D:\\TSchool\\vision-track\\models\\training_runs\\baseline\\baseline_20260714T180333Z\\z0_dataset\\dataset.yaml",
+      "split": "val",
+      "imgsz": 640,
+      "batch": 16,
+      "conf": 0.001,
+      "iou": 0.7,
+      "classes": [
+        0
+      ],
+      "device": "0",
+      "plots": true,
+      "verbose": false,
+      "project": "D:\\TSchool\\vision-track\\models\\training_runs\\baseline\\baseline_20260714T180333Z\\ultralytics",
+      "name": "z0_val",
+      "exist_ok": false
+    },
+    "wall_seconds": 30.487324599999965,
+    "evaluator_metrics": {
+      "precision": 0.8103777686332528,
+      "recall": 0.6410071213472727,
+      "f1": 0.7158100160218666,
+      "mAP50": 0.7532099556181286,
+      "mAP50_95": 0.5180854082125381,
+      "speed_ms_per_image": {
+        "preprocess": 0.7318043090638194,
+        "inference": 2.8744734026741465,
+        "loss": 0.0008014858847465052,
+        "postprocess": 0.19888001485889042
+      },
+      "results_dict": {
+        "metrics/precision(B)": 0.8103777686332528,
+        "metrics/recall(B)": 0.6410071213472727,
+        "metrics/mAP50(B)": 0.7532099556181286,
+        "metrics/mAP50-95(B)": 0.5180854082125381,
+        "fitness": 0.5180854082125381
+      }
+    },
+    "operational_metrics": {
+      "semantics": "fixed project runtime confidence; IoU=0.50 one-to-one matching",
+      "split": "val",
+      "confidence": 0.35,
+      "nms_iou": 0.5,
+      "matching_iou": 0.5,
+      "images": 1346,
+      "objects": 5427,
+      "detections": 3564,
+      "true_positives": 3154,
+      "false_positives": 410,
+      "false_negatives": 2273,
+      "precision": 0.8849607182940517,
+      "recall": 0.5811682329095265,
+      "f1": 0.7015904793682571,
+      "false_positives_per_image": 0.30460624071322434,
+      "wall_seconds": 9.118954499999973,
+      "wall_ms_per_image": 6.774854754829103,
+      "speed_ms_per_image": {
+        "preprocess": 1.5229675334321888,
+        "inference": 1.8697737741453864,
+        "postprocess": 0.6357922734023129
+      }
+    },
+    "ultralytics_save_dir": "models/training_runs/baseline/baseline_20260714T180333Z/ultralytics/z0_val"
+  },
+  "a_smoke": {
+    "status": "complete",
+    "seed": 42,
+    "train_images": 256,
+    "val_images": 64,
+    "train_objects": 995,
+    "val_objects": 278,
+    "epochs": 1,
+    "effective_arguments": {
+      "data": "D:\\TSchool\\vision-track\\models\\training_runs\\baseline\\baseline_20260714T180333Z\\smoke_dataset\\dataset.yaml",
+      "epochs": 1,
+      "batch": 16,
+      "imgsz": 640,
+      "patience": 12,
+      "optimizer": "AdamW",
+      "lr0": 0.001,
+      "weight_decay": 0.0005,
+      "workers": 4,
+      "seed": 42,
+      "deterministic": true,
+      "device": "0",
+      "project": "D:\\TSchool\\vision-track\\models\\training_runs\\baseline\\baseline_20260714T180333Z\\ultralytics",
+      "name": "a_smoke",
+      "exist_ok": false,
+      "val": true,
+      "plots": true,
+      "save": true,
+      "classes": [
+        0
+      ],
+      "hsv_h": 0.015,
+      "hsv_s": 0.7,
+      "hsv_v": 0.4,
+      "degrees": 3.0,
+      "translate": 0.1,
+      "scale": 0.5,
+      "fliplr": 0.5,
+      "mosaic": 0.5
+    },
+    "ultralytics_effective_arguments": {
+      "task": "detect",
+      "mode": "train",
+      "model": "D:\\TSchool\\vision-track\\yolo26n.pt",
+      "data": "D:\\TSchool\\vision-track\\models\\training_runs\\baseline\\baseline_20260714T180333Z\\smoke_dataset\\dataset.yaml",
+      "epochs": 1,
+      "time": null,
+      "patience": 12,
+      "batch": 16,
+      "imgsz": 640,
+      "save": true,
+      "save_period": -1,
+      "cache": false,
+      "device": "0",
+      "workers": 4,
+      "project": "D:\\TSchool\\vision-track\\models\\training_runs\\baseline\\baseline_20260714T180333Z\\ultralytics",
+      "name": "a_smoke",
+      "exist_ok": false,
+      "pretrained": true,
+      "optimizer": "AdamW",
+      "verbose": true,
+      "seed": 42,
+      "deterministic": true,
+      "single_cls": false,
+      "rect": false,
+      "cos_lr": false,
+      "close_mosaic": 10,
+      "resume": false,
+      "amp": true,
+      "fraction": 1.0,
+      "profile": false,
+      "freeze": null,
+      "multi_scale": 0.0,
+      "compile": false,
+      "overlap_mask": true,
+      "mask_ratio": 4,
+      "dropout": 0.0,
+      "val": true,
+      "split": "val",
+      "save_json": false,
+      "conf": null,
+      "iou": 0.7,
+      "max_det": 300,
+      "half": false,
+      "dnn": false,
+      "plots": true,
+      "end2end": null,
+      "source": null,
+      "vid_stride": 1,
+      "stream_buffer": false,
+      "visualize": false,
+      "augment": false,
+      "agnostic_nms": false,
+      "classes": [
+        0
+      ],
+      "retina_masks": false,
+      "embed": null,
+      "show": false,
+      "save_frames": false,
+      "save_txt": false,
+      "save_conf": false,
+      "save_crop": false,
+      "show_labels": true,
+      "show_conf": true,
+      "show_boxes": true,
+      "line_width": null,
+      "format": "torchscript",
+      "keras": false,
+      "optimize": false,
+      "int8": false,
+      "dynamic": false,
+      "simplify": true,
+      "opset": null,
+      "workspace": null,
+      "nms": false,
+      "lr0": 0.001,
+      "lrf": 0.01,
+      "momentum": 0.937,
+      "weight_decay": 0.0005,
+      "warmup_epochs": 3.0,
+      "warmup_momentum": 0.8,
+      "warmup_bias_lr": 0.1,
+      "distill_model": null,
+      "dis": 6.0,
+      "box": 7.5,
+      "cls": 0.5,
+      "cls_pw": 0.0,
+      "dfl": 1.5,
+      "pose": 12.0,
+      "kobj": 1.0,
+      "rle": 1.0,
+      "angle": 1.0,
+      "nbs": 64,
+      "hsv_h": 0.015,
+      "hsv_s": 0.7,
+      "hsv_v": 0.4,
+      "degrees": 3.0,
+      "translate": 0.1,
+      "scale": 0.5,
+      "shear": 0.0,
+      "perspective": 0.0,
+      "flipud": 0.0,
+      "fliplr": 0.5,
+      "bgr": 0.0,
+      "mosaic": 0.5,
+      "mixup": 0.0,
+      "cutmix": 0.0,
+      "copy_paste": 0.0,
+      "copy_paste_mode": "flip",
+      "auto_augment": "randaugment",
+      "erasing": 0.4,
+      "cfg": null,
+      "tracker": "tracktrack.yaml",
+      "save_dir": "D:\\TSchool\\vision-track\\models\\training_runs\\baseline\\baseline_20260714T180333Z\\ultralytics\\a_smoke"
+    },
+    "training_wall_seconds": 40.88729220000005,
+    "training_metrics": {
+      "precision": 0.002864583333333333,
+      "recall": 0.19784172661870503,
+      "f1": 0.005647397063353527,
+      "mAP50": 0.00393515083544306,
+      "mAP50_95": 0.0010526510849734896,
+      "speed_ms_per_image": {
+        "preprocess": 0.1673343750034917,
+        "inference": 1.8412296874963374,
+        "loss": 0.00022500000085301508,
+        "postprocess": 0.3720640624997884
+      },
+      "results_dict": {
+        "metrics/precision(B)": 0.002864583333333333,
+        "metrics/recall(B)": 0.19784172661870503,
+        "metrics/mAP50(B)": 0.00393515083544306,
+        "metrics/mAP50-95(B)": 0.0010526510849734896,
+        "fitness": 0.0010526510849734896
+      }
+    },
+    "ultralytics_save_dir": "models/training_runs/baseline/baseline_20260714T180333Z/ultralytics/a_smoke",
+    "reload_verification": {
+      "best": {
+        "status": "passed",
+        "checkpoint": {
+          "path": "models/training_runs/baseline/baseline_20260714T180333Z/ultralytics/a_smoke/weights/best.pt",
+          "sha256": "8748900b04ee71e800ae71e8ef1f2a6651989569bbd35055c8134fee1862518d",
+          "bytes": 5381701
+        },
+        "git_ignored": true,
+        "reload_inference_images": 1,
+        "reload_inference_detections": 0,
+        "validation_images": 64,
+        "validation_metrics": {
+          "precision": 0.0028789782244556116,
+          "recall": 0.19784172661870503,
+          "f1": 0.005675368898978434,
+          "mAP50": 0.003941982905242824,
+          "mAP50_95": 0.0009914083819306083,
+          "speed_ms_per_image": {
+            "preprocess": 1.235076562501547,
+            "inference": 3.3430734374988447,
+            "loss": 0.0006281250044537501,
+            "postprocess": 0.2579171874970143
+          },
+          "results_dict": {
+            "metrics/precision(B)": 0.0028789782244556116,
+            "metrics/recall(B)": 0.19784172661870503,
+            "metrics/mAP50(B)": 0.003941982905242824,
+            "metrics/mAP50-95(B)": 0.0009914083819306083,
+            "fitness": 0.0009914083819306083
+          }
+        },
+        "validation_save_dir": "models/training_runs/baseline/baseline_20260714T180333Z/ultralytics/a_smoke_best_reload_val"
+      },
+      "last": {
+        "status": "passed",
+        "checkpoint": {
+          "path": "models/training_runs/baseline/baseline_20260714T180333Z/ultralytics/a_smoke/weights/last.pt",
+          "sha256": "a56feabe268429d5d39d8f4edacbe7eb122d735f05ffe388a601db4d24629989",
+          "bytes": 5381701
+        },
+        "git_ignored": true,
+        "reload_inference_images": 1,
+        "reload_inference_detections": 0,
+        "validation_images": 64,
+        "validation_metrics": {
+          "precision": 0.0028789782244556116,
+          "recall": 0.19784172661870503,
+          "f1": 0.005675368898978434,
+          "mAP50": 0.003941982905242824,
+          "mAP50_95": 0.0009914083819306083,
+          "speed_ms_per_image": {
+            "preprocess": 1.0149078125003541,
+            "inference": 4.639457812498193,
+            "loss": 0.0005515625005614311,
+            "postprocess": 0.428790624997788
+          },
+          "results_dict": {
+            "metrics/precision(B)": 0.0028789782244556116,
+            "metrics/recall(B)": 0.19784172661870503,
+            "metrics/mAP50(B)": 0.003941982905242824,
+            "metrics/mAP50-95(B)": 0.0009914083819306083,
+            "fitness": 0.0009914083819306083
+          }
+        },
+        "validation_save_dir": "models/training_runs/baseline/baseline_20260714T180333Z/ultralytics/a_smoke_last_reload_val"
+      }
+    }
+  },
+  "full_a_plan": {
+    "status": "not_started_requires_explicit_approval",
+    "expected_command": "python scripts/train.py --device cuda --confirm-full-run",
+    "effective_arguments": {
+      "data": "D:\\TSchool\\vision-track\\data\\processed\\coco_person\\dataset.yaml",
+      "epochs": 80,
+      "batch": 16,
+      "imgsz": 640,
+      "patience": 12,
+      "optimizer": "AdamW",
+      "lr0": 0.001,
+      "weight_decay": 0.0005,
+      "workers": 4,
+      "seed": 42,
+      "deterministic": true,
+      "device": "0",
+      "project": "D:\\TSchool\\vision-track\\models\\training_runs\\full_a",
+      "name": "a_full_seed42",
+      "exist_ok": false,
+      "val": true,
+      "plots": true,
+      "save": true,
+      "classes": [
+        0
+      ],
+      "hsv_h": 0.015,
+      "hsv_s": 0.7,
+      "hsv_v": 0.4,
+      "degrees": 3.0,
+      "translate": 0.1,
+      "scale": 0.5,
+      "fliplr": 0.5,
+      "mosaic": 0.5
+    },
+    "estimate": {
+      "method": "Linear extrapolation from Ultralytics results.csv epoch time for the 256-image smoke. The range is wide because fixed startup and validation costs dominate a tiny run.",
+      "smoke_training_wall_seconds": 40.88729220000005,
+      "smoke_ultralytics_epoch_seconds": 15.5387,
+      "linear_extrapolation_hours": 86.4812283420139,
+      "estimated_hours_range": [
+        17.2962456684028,
+        86.4812283420139
+      ],
+      "smoke_run_bytes": 15632465,
+      "estimated_disk_bytes_range": [
+        15632465,
+        536870912
+      ],
+      "confidence": "low until the first full-data epoch is authorized and measured"
+    },
+    "expected_artifacts": [
+      "best.pt",
+      "last.pt",
+      "args.yaml",
+      "results.csv",
+      "plots and validation diagnostics",
+      "checkpoint SHA-256/reload report"
+    ]
+  },
+  "dataset_fingerprint_after": {
+    "algorithm": "sha256(path,size,mtime_ns,full_text_content)",
+    "sha256": "9a30316c89b54d9770bafda8cc8610fde8e817fc601951d4cbb8435cb6e39ecf",
+    "file_count": 133618,
+    "total_bytes": 10906476341,
+    "content_hashed_files": 66810
+  },
+  "dataset_unchanged": true,
+  "completed_at": "2026-07-14T18:17:32.990315Z",
+  "artifacts": {
+    "local_ignored_run_root": "models/training_runs/baseline/baseline_20260714T180333Z",
+    "tracked_report_root": "reports/baseline_runs/baseline_20260714T180333Z",
+    "summary_json": "reports/baseline_runs/baseline_20260714T180333Z/summary.json",
+    "metrics_csv": "reports/baseline_runs/baseline_20260714T180333Z/metrics.csv",
+    "operational_per_image_csv": "reports/baseline_runs/baseline_20260714T180333Z/z0_operational_per_image.csv",
+    "smoke_selection": "reports/baseline_runs/baseline_20260714T180333Z/smoke_selection.json"
+  }
+}
