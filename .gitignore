@@ -12,6 +12,16 @@ yolo*.pt
 data/raw/*
 data/processed/*
 data/demo/*
+# COCO archives, extracted images, and materialized datasets are local-only.
+data/raw/coco2017/
+data/processed/coco_person/
+/train2017/
+/val2017/
+/test2017/
+/train2017.zip
+/val2017.zip
+/test2017.zip
+/annotations_trainval2017.zip
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !data/demo/.gitkeep
