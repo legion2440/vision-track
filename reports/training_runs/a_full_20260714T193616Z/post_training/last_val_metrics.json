@@ -1,0 +1,16 @@
+{
+  "model_name": "models\\training_runs\\full_a\\a_full_20260714T193616Z\\ultralytics\\a_full\\weights\\last.pt",
+  "split": "val",
+  "device": "cuda",
+  "detection_precision": 0.8111542381700606,
+  "detection_recall": 0.6884098028376635,
+  "f1_score": 0.7447584950014285,
+  "mAP50": 0.7902633960342691,
+  "mAP50_95": 0.5451497550696915,
+  "speed_ms": {
+    "preprocess": 1.2902407132216795,
+    "inference": 2.8097708023619514,
+    "loss": 0.00047087667858986427,
+    "postprocess": 0.3025805348697164
+  }
+}

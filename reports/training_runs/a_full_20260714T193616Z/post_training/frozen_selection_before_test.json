@@ -1,0 +1,124 @@
+{
+  "status": "frozen_before_test",
+  "frozen_at": "2026-07-15T22:49:46.916468Z",
+  "run_id": "a_full_20260714T193616Z",
+  "selection_inputs": {
+    "validation_only": true,
+    "test_used": false,
+    "best_val_metrics": {
+      "model_name": "models\\training_runs\\full_a\\a_full_20260714T193616Z\\ultralytics\\a_full\\weights\\best.pt",
+      "split": "val",
+      "device": "cuda",
+      "detection_precision": 0.8146660003176247,
+      "detection_recall": 0.6876577847455296,
+      "f1_score": 0.7457931807454792,
+      "mAP50": 0.7902235340113084,
+      "mAP50_95": 0.5451791263475556,
+      "speed_ms": {
+        "preprocess": 1.3634673105521655,
+        "inference": 2.957527117377428,
+        "loss": 0.000654829163382793,
+        "postprocess": 0.32241106984107987
+      }
+    },
+    "last_val_metrics": {
+      "model_name": "models\\training_runs\\full_a\\a_full_20260714T193616Z\\ultralytics\\a_full\\weights\\last.pt",
+      "split": "val",
+      "device": "cuda",
+      "detection_precision": 0.8111542381700606,
+      "detection_recall": 0.6884098028376635,
+      "f1_score": 0.7447584950014285,
+      "mAP50": 0.7902633960342691,
+      "mAP50_95": 0.5451497550696915,
+      "speed_ms": {
+        "preprocess": 1.2902407132216795,
+        "inference": 2.8097708023619514,
+        "loss": 0.00047087667858986427,
+        "postprocess": 0.3025805348697164
+      }
+    },
+    "z0_val_metrics": {
+      "precision": 0.8103777686332528,
+      "recall": 0.6410071213472727,
+      "f1": 0.7158100160218666,
+      "mAP50": 0.7532099556181286,
+      "mAP50_95": 0.5180854082125381,
+      "speed_ms_per_image": {
+        "preprocess": 0.7318043090638194,
+        "inference": 2.8744734026741465,
+        "loss": 0.0008014858847465052,
+        "postprocess": 0.19888001485889042
+      },
+      "results_dict": {
+        "metrics/precision(B)": 0.8103777686332528,
+        "metrics/recall(B)": 0.6410071213472727,
+        "metrics/mAP50(B)": 0.7532099556181286,
+        "metrics/mAP50-95(B)": 0.5180854082125381,
+        "fitness": 0.5180854082125381
+      }
+    }
+  },
+  "checkpoint_selection_rule": "select higher val mAP50_95; tie-break mAP50 then F1",
+  "selected_checkpoint": {
+    "name": "best.pt",
+    "path": "models/training_runs/full_a/a_full_20260714T193616Z/ultralytics/a_full/weights/best.pt",
+    "sha256": "ab09e99711a9057442691bde03802c86d6b0e63a61f1957b1c013f78134073aa",
+    "bytes": 5365509,
+    "reason": "best.pt val mAP50_95 exceeds last.pt val mAP50_95"
+  },
+  "rejected_checkpoint": {
+    "name": "last.pt",
+    "metrics": {
+      "model_name": "models\\training_runs\\full_a\\a_full_20260714T193616Z\\ultralytics\\a_full\\weights\\last.pt",
+      "split": "val",
+      "device": "cuda",
+      "detection_precision": 0.8111542381700606,
+      "detection_recall": 0.6884098028376635,
+      "f1_score": 0.7447584950014285,
+      "mAP50": 0.7902633960342691,
+      "mAP50_95": 0.5451497550696915,
+      "speed_ms": {
+        "preprocess": 1.2902407132216795,
+        "inference": 2.8097708023619514,
+        "loss": 0.00047087667858986427,
+        "postprocess": 0.3025805348697164
+      }
+    }
+  },
+  "threshold_selection_rule": "max F1 on val operational metrics, tie-break recall then precision",
+  "selected_confidence_threshold": 0.25,
+  "selected_threshold_metrics": {
+    "confidence": 0.25,
+    "precision": 0.7943024717218266,
+    "recall": 0.6987285793255943,
+    "f1": 0.7434565238702088,
+    "detections": 4774,
+    "true_positives": 3792,
+    "false_positives": 982,
+    "false_negatives": 1635,
+    "false_positives_per_image": 0.7295690936106983,
+    "images": 1346,
+    "objects": 5427,
+    "wall_ms_per_image": 6.155148588407781,
+    "inference_ms_per_image": 1.4533427191427204
+  },
+  "a_vs_z0_val_delta": {
+    "precision": 0.004288231684371868,
+    "recall": 0.046650663398256964,
+    "mAP50": 0.03701357839317976,
+    "mAP50_95": 0.027093718135017486
+  },
+  "known_limitations": {
+    "control_dataset_unchanged": true,
+    "exact_sha_cross_split_groups": 0,
+    "reviewed_cross_split_same_scene_phash_clusters": 5,
+    "kept_in_control_splits": true,
+    "unlabeled_crowd_val": {
+      "images_with_regions": 117,
+      "regions": 117,
+      "interpretation": "Real crowded people omitted from YOLO labels can be counted as operational false positives and can suppress measured recall."
+    },
+    "interpretation": "Z0/A control metrics include small known cross-split same-scene contamination; fixes belong only to dataset_v2 or a separate deduplicated materialization."
+  },
+  "promotion_performed": false
+}
