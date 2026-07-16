@@ -181,6 +181,33 @@ def test_required_app_functions_exist() -> None:
     assert "render_metrics_dashboard" in functions
 
 
+def test_model_load_fallback_records_loaded_model_id() -> None:
+    source = APP_PATH.read_text(encoding="utf-8")
+
+    tree = _app_tree()
+    detector_select_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "selectbox"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "Detector model"
+    ]
+
+    assert len(detector_select_calls) == 1
+    assert any(
+        keyword.arg == "key"
+        and isinstance(keyword.value, ast.Name)
+        and keyword.value.id == "MODEL_SELECT_KEY"
+        for keyword in detector_select_calls[0].keywords
+    )
+    assert "sync_model_selector_before_widget(" in source
+    assert "record_model_fallback(" in source
+    assert "record_loaded_model(st.session_state, model_id=loaded_model_id)" in source
+
+
 @pytest.mark.parametrize(
     ("function_name", "required_call"),
     [

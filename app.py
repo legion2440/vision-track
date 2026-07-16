@@ -22,6 +22,13 @@ from vision_track.model_registry import (
     build_model_registry,
     default_model_entry,
 )
+from vision_track.model_selection import (
+    MODEL_SELECT_KEY,
+    MODEL_STATE_KEY,
+    record_loaded_model,
+    record_model_fallback,
+    sync_model_selector_before_widget,
+)
 from vision_track.preview import build_preview_component_html, get_preview_runtime
 from vision_track.sources import SourceType, VideoSource
 from vision_track.streamlit_state import ENGINE_KEY
@@ -52,9 +59,10 @@ if not isinstance(session_token, str) or not session_token:
 
 def _engine_for_model(model: ModelRegistryEntry) -> ProcessingEngine:
     existing = st.session_state.get(ENGINE_KEY)
-    existing_model_id = st.session_state.get("vision_model_id")
+    existing_model_id = st.session_state.get(MODEL_STATE_KEY)
     if existing is None or getattr(existing, "_shutdown", False):
         snapshots = []
+        loaded_model_id = model.model_id
         if existing is not None:
             snapshots = existing.snapshot_for_rebuild()
         if existing is not None:
@@ -69,7 +77,11 @@ def _engine_for_model(model: ModelRegistryEntry) -> ProcessingEngine:
         except Exception as exc:
             if model.model_id == default_model.model_id:
                 raise
-            st.session_state["vision_model_id"] = default_model.model_id
+            loaded_model_id = default_model.model_id
+            record_model_fallback(
+                st.session_state,
+                fallback_model_id=default_model.model_id,
+            )
             st.error(
                 f"Could not load detector model `{model.display_name}`: {exc}. "
                 f"Using bundled fallback `{default_model.display_name}`."
@@ -90,7 +102,7 @@ def _engine_for_model(model: ModelRegistryEntry) -> ProcessingEngine:
             if snapshot.was_running:
                 existing.start(snapshot.stream_id)
         st.session_state[ENGINE_KEY] = existing
-        st.session_state["vision_model_id"] = model.model_id
+        record_loaded_model(st.session_state, model_id=loaded_model_id)
     elif existing_model_id != model.model_id:
         previous_model_id = existing_model_id
         try:
@@ -100,10 +112,14 @@ def _engine_for_model(model: ModelRegistryEntry) -> ProcessingEngine:
                 model_id=model.model_id,
             )
         except Exception as exc:
-            st.session_state["vision_model_id"] = previous_model_id
+            if isinstance(previous_model_id, str):
+                record_model_fallback(
+                    st.session_state,
+                    fallback_model_id=previous_model_id,
+                )
             st.error(f"Could not switch detector model: {exc}")
         else:
-            st.session_state["vision_model_id"] = model.model_id
+            record_loaded_model(st.session_state, model_id=model.model_id)
     return existing
 
 
@@ -125,7 +141,11 @@ selectable_model_ids = [model.model_id for model in selectable_models]
 
 with st.sidebar:
     st.header("VisionTrack")
-    remembered_model_id = st.session_state.get("vision_model_id", default_model.model_id)
+    remembered_model_id = sync_model_selector_before_widget(
+        st.session_state,
+        default_model_id=default_model.model_id,
+        selectable_model_ids=selectable_model_ids,
+    )
     selected_model_id = st.selectbox(
         "Detector model",
         selectable_model_ids,
@@ -139,12 +159,13 @@ with st.sidebar:
             for model in selectable_models
             if model.model_id == model_id
         ),
+        key=MODEL_SELECT_KEY,
     )
     selected_model = next(
         model for model in selectable_models if model.model_id == selected_model_id
     )
     engine = _engine_for_model(selected_model)
-    active_model_id = st.session_state.get("vision_model_id", selected_model.model_id)
+    active_model_id = st.session_state.get(MODEL_STATE_KEY, selected_model.model_id)
     active_model = next(
         (model for model in selectable_models if model.model_id == active_model_id),
         selected_model,
