@@ -26,5 +26,4 @@ quantization:
 artifact_status:
   best.pt: generated_by_scripts/train.py
   best_pruned.pt: generated_by_scripts/prune.py
-  best_quantized.onnx: generated_by_scripts/quantize.py
-
+  best_quantized.onnx: not_produced_validation_failed
