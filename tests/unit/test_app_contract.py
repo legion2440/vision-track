@@ -173,7 +173,7 @@ class DirectContextReadVisitor(ast.NodeVisitor):
 def test_required_app_functions_exist() -> None:
     functions = _functions_by_name(_app_tree())
 
-    assert "_engine_for_backend" in functions
+    assert "_engine_for_model" in functions
     assert "render_sidebar_stream_controls" in functions
     assert "render_detail_controls" in functions
     assert "render_stream_metrics_card" in functions
@@ -186,7 +186,7 @@ def test_required_app_functions_exist() -> None:
     [
         ("render_sidebar_stream_controls", "snapshot_stream_controls"),
         ("render_detail_controls", "snapshot_stream_controls"),
-        ("_engine_for_backend", "snapshot_for_rebuild"),
+        ("_engine_for_model", "snapshot_for_rebuild"),
         ("render_stream_metrics_card", "snapshot_stream_metrics"),
         ("render_detail_metrics", "snapshot_stream_metrics"),
     ],

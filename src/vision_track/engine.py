@@ -54,6 +54,8 @@ class ProcessingEngine:
         config: AppConfig | None = None,
         *,
         backend_name: str = "pytorch",
+        model_path: str | Path | None = None,
+        model_id: str | None = None,
         device: DeviceInfo | None = None,
         detector: DetectorBackend | None = None,
     ) -> None:
@@ -62,10 +64,14 @@ class ProcessingEngine:
         self.logger = configure_logging(resolve_project_path(self.config.log_file))
         self._contexts: dict[str, StreamContext] = {}
         self._lock = threading.RLock()
-        model_path = self._select_model_path(backend_name)
+        self.model_id = model_id or backend_name
+        selected_model_path = (
+            str(model_path) if model_path is not None else self._select_model_path(backend_name)
+        )
+        self.model_path = selected_model_path
         self.detector = detector or create_backend(
             backend_name,
-            model_path,
+            selected_model_path,
             self.device,
             image_size=self.config.model.image_size,
             confidence=self.config.model.confidence,
@@ -88,6 +94,79 @@ class ProcessingEngine:
             return str(resolve_project_path(self.config.model.quantized_checkpoint))
         checkpoint = resolve_project_path(self.config.model.checkpoint)
         return str(checkpoint) if checkpoint.exists() else self.config.model.pretrained
+
+    def _create_detector(
+        self,
+        *,
+        backend_name: str,
+        model_path: str | Path,
+    ) -> DetectorBackend:
+        return create_backend(
+            backend_name,
+            model_path,
+            self.device,
+            image_size=self.config.model.image_size,
+            confidence=self.config.model.confidence,
+            iou=self.config.model.iou,
+            person_class_id=self.config.model.person_class_id,
+        )
+
+    def switch_model(
+        self,
+        *,
+        backend_name: str,
+        model_path: str | Path,
+        model_id: str,
+    ) -> None:
+        if self._shutdown:
+            raise RuntimeError("Cannot switch model after engine shutdown")
+        selected_model_path = str(model_path)
+        if (
+            self.model_id == model_id
+            and self.detector.name == backend_name
+            and self.model_path == selected_model_path
+        ):
+            return
+
+        self.scheduler.stop()
+        try:
+            detector = self._create_detector(
+                backend_name=backend_name,
+                model_path=selected_model_path,
+            )
+            detector.load()
+            detector.warmup()
+        except Exception:
+            self.scheduler.start()
+            raise
+
+        self.detector = detector
+        self.model_id = model_id
+        self.model_path = selected_model_path
+        self.scheduler = SharedInferenceScheduler(
+            self.detector,
+            self.contexts,
+            self.logger,
+            idle_seconds=self.config.runtime.scheduler_idle_seconds,
+            max_batch_size=self.config.runtime.max_batch_size,
+            max_batch_wait_ms=self.config.runtime.max_batch_wait_ms,
+        )
+        for context in self.contexts():
+            with context.lock:
+                context.queue.clear(reset_stats=True)
+                context.tracker = StreamTracker(self._tracker_settings())
+                context.counter = ZoneCounter(self._zone_geometry())
+                context.latest_frame = None
+                context.latest_rendered_frame = None
+                context.latest_rendered_version = None
+                context.latest_detections = None
+                context.trajectories.clear()
+                context.actual_backend = None
+                context.actual_device = None
+                context.actual_provider = None
+                context.error = None
+        if any(context.reader and context.reader.running for context in self.contexts()):
+            self.scheduler.start()
 
     def contexts(self) -> list[StreamContext]:
         with self._lock:

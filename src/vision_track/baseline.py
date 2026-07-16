@@ -453,10 +453,14 @@ def environment_payload(packages: Sequence[str]) -> dict:
     import torch
 
     cuda_available = bool(torch.cuda.is_available())
+    try:
+        cudnn_version = torch.backends.cudnn.version()
+    except Exception:
+        cudnn_version = None
     cuda = {
         "available": cuda_available,
         "torch_cuda_version": torch.version.cuda,
-        "cudnn_version": torch.backends.cudnn.version(),
+        "cudnn_version": cudnn_version,
         "device_count": torch.cuda.device_count() if cuda_available else 0,
         "devices": [
             {

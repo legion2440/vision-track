@@ -1,0 +1,109 @@
+{
+  "status": "complete",
+  "computed_at": "2026-07-16T06:41:24.830251+00:00",
+  "model": {
+    "path": "yolo26x.pt",
+    "sha256": "9fdd44a31c504547ffb81d2c6d9e6dac3493c8eaa8b0398d3f43bae6c7003e92",
+    "bytes": 118667365
+  },
+  "dataset": {
+    "path": "data\\processed\\coco_person\\dataset.yaml",
+    "split": "val",
+    "images": 1346,
+    "objects": 5427
+  },
+  "test_used": false,
+  "promotion_performed": false,
+  "dataset_modified": false,
+  "main_config_modified": false,
+  "quality": {
+    "standard_eval": {
+      "precision": 0.8589828074459875,
+      "recall": 0.773539708863092,
+      "f1": 0.8140252941716503,
+      "mAP50": 0.8740049937082152,
+      "mAP50_95": 0.6680524667033105,
+      "speed_ms": {
+        "preprocess": 0.9697987369681503,
+        "inference": 41.036547176774455,
+        "loss": 0.0004436850411482543,
+        "postprocess": 0.18090289743426208
+      }
+    },
+    "confidence_sweep_argmax_f1": {
+      "confidence": 0.3,
+      "true_positives": 4169,
+      "false_positives": 759,
+      "false_negatives": 1258,
+      "detections": 4928,
+      "images": 1346,
+      "objects": 5427,
+      "precision": 0.8459821428571429,
+      "recall": 0.7681960567532706,
+      "f1": 0.8052148720424915,
+      "false_positives_per_image": 0.5638930163447251,
+      "wall_ms_per_image": 40.704767830610805,
+      "predict_wall_ms_per_image": 35.73762132245393
+    }
+  },
+  "requirements": {
+    "precision": 0.85,
+    "recall": 0.8,
+    "f1": 0.85,
+    "fps": 15.0
+  },
+  "requirement_checks": {
+    "standard_eval_quality": {
+      "precision": true,
+      "recall": false,
+      "f1": false
+    },
+    "confidence_sweep_operational_quality": {
+      "precision": false,
+      "recall": false,
+      "f1": false
+    },
+    "pipeline_fps": [
+      {
+        "name": "yolo26x_720p_cpu_1_stream",
+        "aggregate_fps": 2.810972434121613,
+        "fps_per_stream": 2.810972434121613,
+        "fps_pass": false,
+        "standard_quality_and_fps_pass": false,
+        "operational_quality_and_fps_pass": false
+      },
+      {
+        "name": "yolo26x_720p_cpu_2_stream",
+        "aggregate_fps": 2.1584427918800926,
+        "fps_per_stream": 1.0792213959400463,
+        "fps_pass": false,
+        "standard_quality_and_fps_pass": false,
+        "operational_quality_and_fps_pass": false
+      },
+      {
+        "name": "yolo26x_720p_cuda_1_stream",
+        "aggregate_fps": 22.865465015587386,
+        "fps_per_stream": 22.865465015587386,
+        "fps_pass": true,
+        "standard_quality_and_fps_pass": false,
+        "operational_quality_and_fps_pass": false
+      },
+      {
+        "name": "yolo26x_720p_cuda_2_stream",
+        "aggregate_fps": 36.833275132434736,
+        "fps_per_stream": 18.416637566217368,
+        "fps_pass": true,
+        "standard_quality_and_fps_pass": false,
+        "operational_quality_and_fps_pass": false
+      }
+    ],
+    "all_requirements_simultaneously_met_any_scenario_standard_eval": false,
+    "all_requirements_simultaneously_met_any_scenario_operational_sweep": false
+  },
+  "artifacts": {
+    "standard_eval": "reports\\training_runs\\yolo26x_z0\\yolo26x_val_metrics.json",
+    "confidence_sweep_json": "reports\\training_runs\\yolo26x_z0\\yolo26x_confidence_sweep_val.json",
+    "confidence_sweep_csv": "reports\\training_runs\\yolo26x_z0\\yolo26x_confidence_sweep_val.csv",
+    "pipeline_benchmark": "reports\\training_runs\\yolo26x_z0\\yolo26x_720p_pipeline_benchmark.json"
+  }
+}

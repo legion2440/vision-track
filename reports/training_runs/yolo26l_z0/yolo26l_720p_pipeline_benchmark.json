@@ -1,0 +1,230 @@
+{
+  "status": "complete",
+  "computed_at": "2026-07-16T06:16:28.042472+00:00",
+  "scope": "720p local-video runtime pipeline: decode/resize -> infer_batch -> filter+nms -> OpenCV render -> JPEG encode; no dataset/config/promotion changes",
+  "test_used": false,
+  "model": "yolo26l.pt",
+  "model_sha256": "9fe3c544f2b19bebad7ea41e76d7ad3d88b7c2f10d11d24430c5311f6b32db26",
+  "software_versions": {
+    "python": "3.13.5",
+    "os": "Windows-11-10.0.26200-SP0",
+    "ultralytics": "8.4.78",
+    "torch": "2.12.1+cu130",
+    "opencv-python": "4.13.0.92",
+    "numpy": "2.4.6"
+  },
+  "platform": "Windows-11-10.0.26200-SP0",
+  "scenarios": [
+    {
+      "name": "yolo26l_720p_cpu_1_stream",
+      "status": "ok",
+      "model": "yolo26l.pt",
+      "model_sha256": "9fe3c544f2b19bebad7ea41e76d7ad3d88b7c2f10d11d24430c5311f6b32db26",
+      "backend": "pytorch",
+      "requested_device": "cpu",
+      "actual_device": "cpu",
+      "streams": 1,
+      "videos": [
+        "data\\demo\\upload-1ab457f5ec0e.mp4"
+      ],
+      "resolution": [
+        1280,
+        720
+      ],
+      "image_size": 640,
+      "confidence": 0.3,
+      "iou": 0.5,
+      "warmup_batches": 10,
+      "measured_batches": 60,
+      "frames_processed": 60,
+      "load_ms": 1918.5328999883495,
+      "aggregate_fps": 5.825266132593987,
+      "fps_per_stream": 5.825266132593987,
+      "stage_ms_per_batch_mean": {
+        "decode_resize": 1.3700166671090603,
+        "infer_batch": 161.39768833333315,
+        "filter_nms": 0.1887600010377355,
+        "render": 0.8609599994088057,
+        "jpeg_encode": 7.8473916682317695,
+        "total": 171.66597666752446
+      },
+      "stage_ms_per_frame_mean": {
+        "decode_resize": 1.3700166671090603,
+        "infer_batch": 161.39768833333315,
+        "filter_nms": 0.1887600010377355,
+        "render": 0.8609599994088057,
+        "jpeg_encode": 7.8473916682317695,
+        "total": 171.66597666752446
+      },
+      "stage_ms_per_batch_p95": {
+        "decode_resize": 1.556900009745732,
+        "infer_batch": 177.0198000012897,
+        "filter_nms": 0.2545999886933714,
+        "render": 0.9954999986803159,
+        "jpeg_encode": 8.707499990123324,
+        "total": 186.65030000556726
+      },
+      "detections_per_batch_mean": 4.516666666666667,
+      "jpeg_bytes_per_frame_mean": 65174.15
+    },
+    {
+      "name": "yolo26l_720p_cpu_2_stream",
+      "status": "ok",
+      "model": "yolo26l.pt",
+      "model_sha256": "9fe3c544f2b19bebad7ea41e76d7ad3d88b7c2f10d11d24430c5311f6b32db26",
+      "backend": "pytorch",
+      "requested_device": "cpu",
+      "actual_device": "cpu",
+      "streams": 2,
+      "videos": [
+        "data\\demo\\upload-1ab457f5ec0e.mp4",
+        "data\\demo\\upload-2b68d703f40d.mp4"
+      ],
+      "resolution": [
+        1280,
+        720
+      ],
+      "image_size": 640,
+      "confidence": 0.3,
+      "iou": 0.5,
+      "warmup_batches": 10,
+      "measured_batches": 60,
+      "frames_processed": 120,
+      "load_ms": 80.63009999750648,
+      "aggregate_fps": 5.9898844329102605,
+      "fps_per_stream": 2.9949422164551303,
+      "stage_ms_per_batch_mean": {
+        "decode_resize": 5.20347166529973,
+        "infer_batch": 311.95040833384456,
+        "filter_nms": 0.22338833271836242,
+        "render": 1.5286866667641636,
+        "jpeg_encode": 14.989101667257879,
+        "total": 333.8962583336979
+      },
+      "stage_ms_per_frame_mean": {
+        "decode_resize": 2.601735832649865,
+        "infer_batch": 155.97520416692228,
+        "filter_nms": 0.11169416635918121,
+        "render": 0.7643433333820818,
+        "jpeg_encode": 7.4945508336289395,
+        "total": 166.94812916684896
+      },
+      "stage_ms_per_batch_p95": {
+        "decode_resize": 5.950599996140227,
+        "infer_batch": 333.2413999887649,
+        "filter_nms": 0.30089999199844897,
+        "render": 1.7960999975912273,
+        "jpeg_encode": 16.107599993119948,
+        "total": 356.86189999978524
+      },
+      "detections_per_batch_mean": 4.516666666666667,
+      "jpeg_bytes_per_frame_mean": 59362.71666666667
+    },
+    {
+      "name": "yolo26l_720p_cuda_1_stream",
+      "status": "ok",
+      "model": "yolo26l.pt",
+      "model_sha256": "9fe3c544f2b19bebad7ea41e76d7ad3d88b7c2f10d11d24430c5311f6b32db26",
+      "backend": "pytorch",
+      "requested_device": "cuda",
+      "actual_device": "cuda:0",
+      "streams": 1,
+      "videos": [
+        "data\\demo\\upload-1ab457f5ec0e.mp4"
+      ],
+      "resolution": [
+        1280,
+        720
+      ],
+      "image_size": 640,
+      "confidence": 0.3,
+      "iou": 0.5,
+      "warmup_batches": 10,
+      "measured_batches": 60,
+      "frames_processed": 60,
+      "load_ms": 71.95559999672696,
+      "aggregate_fps": 36.2923779280061,
+      "fps_per_stream": 36.2923779280061,
+      "stage_ms_per_batch_mean": {
+        "decode_resize": 1.1069566668690338,
+        "infer_batch": 19.792031665565446,
+        "filter_nms": 0.13859666651114821,
+        "render": 0.6455666674204016,
+        "jpeg_encode": 5.869819999740382,
+        "total": 27.55399500092608
+      },
+      "stage_ms_per_frame_mean": {
+        "decode_resize": 1.1069566668690338,
+        "infer_batch": 19.792031665565446,
+        "filter_nms": 0.13859666651114821,
+        "render": 0.6455666674204016,
+        "jpeg_encode": 5.869819999740382,
+        "total": 27.55399500092608
+      },
+      "stage_ms_per_batch_p95": {
+        "decode_resize": 1.1693999986164272,
+        "infer_batch": 20.852999994531274,
+        "filter_nms": 0.1773999974830076,
+        "render": 0.701400000252761,
+        "jpeg_encode": 6.2618000083602965,
+        "total": 28.92229999997653
+      },
+      "detections_per_batch_mean": 4.516666666666667,
+      "jpeg_bytes_per_frame_mean": 65182.96666666667
+    },
+    {
+      "name": "yolo26l_720p_cuda_2_stream",
+      "status": "ok",
+      "model": "yolo26l.pt",
+      "model_sha256": "9fe3c544f2b19bebad7ea41e76d7ad3d88b7c2f10d11d24430c5311f6b32db26",
+      "backend": "pytorch",
+      "requested_device": "cuda",
+      "actual_device": "cuda:0",
+      "streams": 2,
+      "videos": [
+        "data\\demo\\upload-1ab457f5ec0e.mp4",
+        "data\\demo\\upload-2b68d703f40d.mp4"
+      ],
+      "resolution": [
+        1280,
+        720
+      ],
+      "image_size": 640,
+      "confidence": 0.3,
+      "iou": 0.5,
+      "warmup_batches": 10,
+      "measured_batches": 60,
+      "frames_processed": 120,
+      "load_ms": 90.06950000184588,
+      "aggregate_fps": 47.37877144600769,
+      "fps_per_stream": 23.689385723003845,
+      "stage_ms_per_batch_mean": {
+        "decode_resize": 4.664784998506851,
+        "infer_batch": 24.192618333230104,
+        "filter_nms": 0.16712000045420913,
+        "render": 1.1134500001692988,
+        "jpeg_encode": 12.073893333581509,
+        "total": 42.21299833152443
+      },
+      "stage_ms_per_frame_mean": {
+        "decode_resize": 2.3323924992534253,
+        "infer_batch": 12.096309166615052,
+        "filter_nms": 0.08356000022710457,
+        "render": 0.5567250000846494,
+        "jpeg_encode": 6.0369466667907545,
+        "total": 21.106499165762216
+      },
+      "stage_ms_per_batch_p95": {
+        "decode_resize": 5.232600000454113,
+        "infer_batch": 30.725500007974915,
+        "filter_nms": 0.20580001000780612,
+        "render": 1.2820999982068315,
+        "jpeg_encode": 13.230399999883957,
+        "total": 49.98450000130106
+      },
+      "detections_per_batch_mean": 4.533333333333333,
+      "jpeg_bytes_per_frame_mean": 59377.36666666667
+    }
+  ],
+  "errors": []
+}

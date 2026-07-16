@@ -58,7 +58,7 @@ def test_promotion_cli_requires_source_destination_and_sha() -> None:
     assert args.verification_device == "auto"
 
 
-def test_verify_yolo_checkpoint_requires_single_person_detection_class(
+def test_verify_yolo_checkpoint_accepts_person_class_in_multiclass_checkpoint(
     tmp_path: Path,
 ) -> None:
     checkpoint = tmp_path / "model.pt"
@@ -94,6 +94,10 @@ def test_verify_yolo_checkpoint_requires_single_person_detection_class(
     assert verification["status"] == "passed"
     assert verification["task"] == "detect"
     assert verification["names"] == {"0": "person"}
+    assert verification["class_count"] == 1
+    assert verification["person_class_id"] == 0
+    assert verification["person_class_name"] == "person"
+    assert verification["multiclass_checkpoint"] is False
     assert verification["inference_smoke"]["status"] == "passed"
     assert verification["inference_smoke"]["detection_count"] == 1
     assert verification["inference_smoke"]["input"]["shape"] == [64, 64, 3]
@@ -105,11 +109,25 @@ def test_verify_yolo_checkpoint_requires_single_person_detection_class(
     assert predict_calls[0]["device"] == "cpu"
     assert predict_calls[0]["classes"] == [0]
 
-    with pytest.raises(RuntimeError, match="exactly class 0=person"):
+    class MulticlassFakeModel(FakeModel):
+        names = {0: "person", 1: "bicycle", 2: "car"}
+
+    multiclass = verify_yolo_checkpoint(
+        checkpoint,
+        loader=lambda *_args, **_kwargs: MulticlassFakeModel(),
+        image_size=64,
+    )
+    assert multiclass["status"] == "passed"
+    assert multiclass["class_count"] == 3
+    assert multiclass["person_class_id"] == 0
+    assert multiclass["person_class_name"] == "person"
+    assert multiclass["multiclass_checkpoint"] is True
+
+    with pytest.raises(RuntimeError, match="class 0=person"):
         verify_yolo_checkpoint(
             checkpoint,
             loader=lambda *_args, **_kwargs: SimpleNamespace(
-                task="detect", names={0: "person", 1: "car"}
+                task="detect", names={0: "vehicle", 1: "person"}
             ),
         )
 

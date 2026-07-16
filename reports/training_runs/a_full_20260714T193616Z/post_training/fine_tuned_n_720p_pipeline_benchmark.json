@@ -1,0 +1,98 @@
+{
+  "model": "models/checkpoints/best.pt",
+  "model_sha256": "ab09e99711a9057442691bde03802c86d6b0e63a61f1957b1c013f78134073aa",
+  "scenarios": [
+    {
+      "name": "fine_tuned_n_720p_cpu_1_stream",
+      "status": "ok",
+      "measurement_scope": "detector inference only; decoded and resized frames supplied before timing",
+      "model": "D:\\TSchool\\vision-track\\models\\checkpoints\\best.pt",
+      "backend": "pytorch",
+      "actual_backend": "pytorch",
+      "provider": null,
+      "requested_device": "cpu",
+      "actual_device": "cpu",
+      "streams": 1,
+      "resolution": [
+        1280,
+        720
+      ],
+      "image_size": 640,
+      "warmup_frames": 10,
+      "measured_frames": 60,
+      "batch_inference_latency_ms": 28.223175001039635,
+      "backend_reported_latency_ms": 28.04182166631411,
+      "aggregate_fps": 35.43187469032679,
+      "fps_per_stream": 35.43187469032679
+    },
+    {
+      "name": "fine_tuned_n_720p_cpu_2_stream",
+      "status": "ok",
+      "measurement_scope": "detector inference only; decoded and resized frames supplied before timing",
+      "model": "D:\\TSchool\\vision-track\\models\\checkpoints\\best.pt",
+      "backend": "pytorch",
+      "actual_backend": "pytorch",
+      "provider": null,
+      "requested_device": "cpu",
+      "actual_device": "cpu",
+      "streams": 2,
+      "resolution": [
+        1280,
+        720
+      ],
+      "image_size": 640,
+      "warmup_frames": 10,
+      "measured_frames": 60,
+      "batch_inference_latency_ms": 44.748820001162436,
+      "backend_reported_latency_ms": 22.260079999856924,
+      "aggregate_fps": 44.69391595014229,
+      "fps_per_stream": 22.346957975071145
+    },
+    {
+      "name": "fine_tuned_n_720p_cuda_1_stream",
+      "status": "ok",
+      "measurement_scope": "detector inference only; decoded and resized frames supplied before timing",
+      "model": "D:\\TSchool\\vision-track\\models\\checkpoints\\best.pt",
+      "backend": "pytorch",
+      "actual_backend": "pytorch",
+      "provider": null,
+      "requested_device": "cuda",
+      "actual_device": "cuda:0",
+      "streams": 1,
+      "resolution": [
+        1280,
+        720
+      ],
+      "image_size": 640,
+      "warmup_frames": 10,
+      "measured_frames": 60,
+      "batch_inference_latency_ms": 13.031206666831471,
+      "backend_reported_latency_ms": 12.655616666840311,
+      "aggregate_fps": 76.73886429453347,
+      "fps_per_stream": 76.73886429453347
+    },
+    {
+      "name": "fine_tuned_n_720p_cuda_2_stream",
+      "status": "ok",
+      "measurement_scope": "detector inference only; decoded and resized frames supplied before timing",
+      "model": "D:\\TSchool\\vision-track\\models\\checkpoints\\best.pt",
+      "backend": "pytorch",
+      "actual_backend": "pytorch",
+      "provider": null,
+      "requested_device": "cuda",
+      "actual_device": "cuda:0",
+      "streams": 2,
+      "resolution": [
+        1280,
+        720
+      ],
+      "image_size": 640,
+      "warmup_frames": 10,
+      "measured_frames": 60,
+      "batch_inference_latency_ms": 15.598005001083948,
+      "backend_reported_latency_ms": 7.580154166741219,
+      "aggregate_fps": 128.2215257567243,
+      "fps_per_stream": 64.11076287836215
+    }
+  ]
+}

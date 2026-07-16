@@ -15,9 +15,13 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from vision_track.configuration import load_config, resolve_project_path
-from vision_track.detector import available_backends
 from vision_track.engine import ProcessingEngine
 from vision_track.lifecycle import StreamState
+from vision_track.model_registry import (
+    ModelRegistryEntry,
+    build_model_registry,
+    default_model_entry,
+)
 from vision_track.preview import build_preview_component_html, get_preview_runtime
 from vision_track.sources import SourceType, VideoSource
 from vision_track.streamlit_state import ENGINE_KEY
@@ -46,16 +50,36 @@ if not isinstance(session_token, str) or not session_token:
     st.session_state[PREVIEW_SESSION_TOKEN_KEY] = session_token
 
 
-def _engine_for_backend(backend_name: str) -> ProcessingEngine:
+def _engine_for_model(model: ModelRegistryEntry) -> ProcessingEngine:
     existing = st.session_state.get(ENGINE_KEY)
-    existing_backend = st.session_state.get("vision_backend")
-    if existing is None or existing_backend != backend_name or getattr(existing, "_shutdown", False):
+    existing_model_id = st.session_state.get("vision_model_id")
+    if existing is None or getattr(existing, "_shutdown", False):
         snapshots = []
         if existing is not None:
             snapshots = existing.snapshot_for_rebuild()
         if existing is not None:
             existing.shutdown()
-        existing = ProcessingEngine(config, backend_name=backend_name)
+        try:
+            existing = ProcessingEngine(
+                config,
+                backend_name=model.backend,
+                model_path=model.runtime_path,
+                model_id=model.model_id,
+            )
+        except Exception as exc:
+            if model.model_id == default_model.model_id:
+                raise
+            st.session_state["vision_model_id"] = default_model.model_id
+            st.error(
+                f"Could not load detector model `{model.display_name}`: {exc}. "
+                f"Using bundled fallback `{default_model.display_name}`."
+            )
+            existing = ProcessingEngine(
+                config,
+                backend_name=default_model.backend,
+                model_path=default_model.runtime_path,
+                model_id=default_model.model_id,
+            )
         for snapshot in snapshots:
             existing.add_stream(
                 snapshot.source,
@@ -66,7 +90,20 @@ def _engine_for_backend(backend_name: str) -> ProcessingEngine:
             if snapshot.was_running:
                 existing.start(snapshot.stream_id)
         st.session_state[ENGINE_KEY] = existing
-        st.session_state["vision_backend"] = backend_name
+        st.session_state["vision_model_id"] = model.model_id
+    elif existing_model_id != model.model_id:
+        previous_model_id = existing_model_id
+        try:
+            existing.switch_model(
+                backend_name=model.backend,
+                model_path=model.runtime_path,
+                model_id=model.model_id,
+            )
+        except Exception as exc:
+            st.session_state["vision_model_id"] = previous_model_id
+            st.error(f"Could not switch detector model: {exc}")
+        else:
+            st.session_state["vision_model_id"] = model.model_id
     return existing
 
 
@@ -81,22 +118,64 @@ def _save_upload(uploaded_file) -> Path:
     return destination
 
 
-pytorch_path = resolve_project_path(config.model.checkpoint)
-if not pytorch_path.exists():
-    pytorch_path = Path(config.model.pretrained)
-onnx_path = resolve_project_path(config.model.quantized_checkpoint)
-backend_choices = available_backends(pytorch_path, onnx_path)
-if not backend_choices:
-    backend_choices = ["pytorch"]
+model_registry = build_model_registry(config)
+selectable_models = [model for model in model_registry if model.selectable]
+default_model = default_model_entry(model_registry)
+selectable_model_ids = [model.model_id for model in selectable_models]
 
 with st.sidebar:
     st.header("VisionTrack")
-    backend_name = st.selectbox("Detector backend", backend_choices)
-    engine = _engine_for_backend(backend_name)
+    remembered_model_id = st.session_state.get("vision_model_id", default_model.model_id)
+    selected_model_id = st.selectbox(
+        "Detector model",
+        selectable_model_ids,
+        index=selectable_model_ids.index(
+            remembered_model_id
+            if remembered_model_id in selectable_model_ids
+            else default_model.model_id
+        ),
+        format_func=lambda model_id: next(
+            model.display_name
+            for model in selectable_models
+            if model.model_id == model_id
+        ),
+    )
+    selected_model = next(
+        model for model in selectable_models if model.model_id == selected_model_id
+    )
+    engine = _engine_for_model(selected_model)
+    active_model_id = st.session_state.get("vision_model_id", selected_model.model_id)
+    active_model = next(
+        (model for model in selectable_models if model.model_id == active_model_id),
+        selected_model,
+    )
     st.caption(
         f"Requested device: `{engine.device.kind}` · {engine.device.name}\n\n"
-        f"Requested backend: `{engine.detector.name}`"
+        f"Model: `{active_model.display_name}`\n\n"
+        f"Backend: `{engine.detector.name}`"
     )
+
+    if (
+        engine.device.kind == "cpu"
+        and active_model.model_id in {"pretrained_l", "pretrained_x"}
+    ):
+        st.warning(
+            "This model is heavy for CPU-only runtime. Use Fine-tuned N or "
+            "Pretrained M on weaker hardware."
+        )
+    downloadable_models = [
+        model for model in selectable_models if model.downloadable and not model.available
+    ]
+    if downloadable_models:
+        with st.expander("Download-on-demand models", expanded=False):
+            for model in downloadable_models:
+                st.caption(f"{model.display_name}: {model.notes}")
+    unavailable_models = [model for model in model_registry if not model.selectable]
+    if unavailable_models:
+        with st.expander("Unavailable model artifacts", expanded=False):
+            for model in unavailable_models:
+                status = "missing" if not model.available else "not selectable"
+                st.caption(f"{model.display_name}: {status}. {model.notes}")
 
     contexts = engine.contexts()
     preview_runtime.registry.replace_session(session_token, contexts)

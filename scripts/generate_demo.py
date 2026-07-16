@@ -77,11 +77,13 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     video_path = output_dir / "multi_stream_demo.mp4"
     image_path = output_dir / "roi_counting_example.png"
+    tile_size = (640, 360)
+    grid_size = (tile_size[0] * 2, tile_size[1])
     writer = cv2.VideoWriter(
         str(video_path),
         cv2.VideoWriter_fourcc(*"mp4v"),
         20.0,
-        (1280, 720),
+        grid_size,
     )
     if not writer.isOpened():
         raise OSError("Unable to create demo MP4 with the available OpenCV codecs")
@@ -111,7 +113,7 @@ def main() -> None:
                     out_count=counter.out_count,
                     occupancy=counter.occupancy,
                 )
-                rendered.append(cv2.resize(annotated, (640, 360)))
+                rendered.append(cv2.resize(annotated, tile_size))
                 if not saved_example:
                     cv2.imwrite(str(image_path), annotated)
                     saved_example = True
@@ -129,4 +131,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

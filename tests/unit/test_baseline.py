@@ -395,4 +395,10 @@ def test_model_weights_and_training_runs_are_git_ignored() -> None:
 
     assert "models/training_runs/" in ignore
     assert "models/checkpoints/*.pt" in ignore
-    assert "!models/checkpoints/best.pt" not in ignore
+    assert "!models/checkpoints/best.pt" in ignore
+    assert "!models/checkpoints/fine_tuned_n.pt" not in ignore
+    assert "yolo*.pt" in ignore
+    assert "!yolo26m.pt" not in ignore
+    assert "!yolo26x.pt" not in ignore
+    assert "models/checkpoints/experiments/" in ignore
+    assert not (ROOT / ".gitattributes").exists()

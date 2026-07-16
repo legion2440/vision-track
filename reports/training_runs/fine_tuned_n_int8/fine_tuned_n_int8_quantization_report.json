@@ -1,0 +1,16 @@
+{
+  "status": "quantized_and_verified",
+  "source_model": "models\\checkpoints\\best.pt",
+  "source_model_sha256": "ab09e99711a9057442691bde03802c86d6b0e63a61f1957b1c013f78134073aa",
+  "fp32_onnx": "models\\checkpoints\\experiments\\fine_tuned_n_fp32.onnx",
+  "fp32_onnx_sha256": "3a35f04e729387a3c9243f0ae8da719ded257ccddc6dbe48aa74ce9b71f51e41",
+  "quantized_model": "models\\checkpoints\\experiments\\fine_tuned_n_int8.onnx",
+  "quantized_model_sha256": "41746b4dedd6356c523ddf99aba0dfcf63d6335a32d3c67ac7f5bca1e3a5dd6d",
+  "calibration_split": "train",
+  "calibration_images": 256,
+  "fp32_size_mb": 9.805056,
+  "int8_size_mb": 3.097863,
+  "verification_provider": "CPUExecutionProvider",
+  "verification_latency_ms": 20.7349999982398,
+  "verification_detections": 0
+}

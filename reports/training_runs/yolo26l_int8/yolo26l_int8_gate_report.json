@@ -1,0 +1,55 @@
+{
+  "status": "complete",
+  "computed_at": "2026-07-16T08:06:19.854350+00:00",
+  "test_used": false,
+  "artifact": {
+    "path": "models\\checkpoints\\experiments\\yolo26l_int8.onnx",
+    "sha256": "79be59f4510dc5467e34ec4f05acb3f12d80fe69fbaec7c7c91fddb2fddfa754",
+    "bytes": 26190546
+  },
+  "quality_gate": {
+    "max_allowed_drop_absolute": 0.01,
+    "fp32_l_val": {
+      "f1": 0.8020040269108928,
+      "mAP50_95": 0.6498525312937524
+    },
+    "int8_l_val": {
+      "f1": 0.0,
+      "mAP50_95": 0.0
+    },
+    "drops": {
+      "f1": 0.8020040269108928,
+      "mAP50_95": 0.6498525312937524
+    },
+    "passed": false
+  },
+  "runtime_gate": {
+    "requires_quality_gate": true,
+    "min_cpu_speedup_percent": 15.0,
+    "fp32_onnx_cpu_fps": {
+      "one_stream": 4.95454481756914,
+      "two_stream": 4.884479197351047
+    },
+    "int8_onnx_cpu_fps": {
+      "one_stream": 11.268566583419902,
+      "two_stream": 11.010059864248385
+    },
+    "speedup_percent": {
+      "one_stream": 127.43898780491052,
+      "two_stream": 125.40908496896384
+    },
+    "speed_passed": true,
+    "passed": false
+  },
+  "size": {
+    "fp32_mb": 99.61337,
+    "int8_mb": 26.190546,
+    "reduction_percent": 73.70780046895311
+  },
+  "decision": {
+    "artifact_accepted": false,
+    "recommended_cpu_runtime": false,
+    "promote_to_best_quantized": false,
+    "reason": "INT8 ONNX produced zero val precision/recall/mAP; quality gate failed despite CPU speedup and size reduction."
+  }
+}

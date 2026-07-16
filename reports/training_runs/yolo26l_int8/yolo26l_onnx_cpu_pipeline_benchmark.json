@@ -1,0 +1,231 @@
+{
+  "status": "complete",
+  "computed_at": "2026-07-16T08:05:47.381001+00:00",
+  "scope": "ONNX CPU 720p local-video runtime pipeline: decode/resize -> infer_batch -> filter+nms -> OpenCV render -> JPEG encode",
+  "test_used": false,
+  "software_versions": {
+    "python": "3.13.5",
+    "os": "Windows-11-10.0.26200-SP0",
+    "onnxruntime": "1.27.0",
+    "opencv-python": "4.13.0.92",
+    "numpy": "2.4.6"
+  },
+  "platform": "Windows-11-10.0.26200-SP0",
+  "scenarios": [
+    {
+      "name": "yolo26l_fp32_onnx_720p_cpu_1_stream",
+      "status": "ok",
+      "model": "models\\checkpoints\\experiments\\yolo26l_fp32.onnx",
+      "model_sha256": "686bc3d820c678b74a912b0147d536ddfcf1a64c3922e22c3c55f027d0dc5c0c",
+      "backend": "onnxruntime",
+      "provider": "CPUExecutionProvider",
+      "requested_device": "cpu",
+      "actual_device": "cpu",
+      "streams": 1,
+      "videos": [
+        "data\\demo\\upload-1ab457f5ec0e.mp4"
+      ],
+      "resolution": [
+        1280,
+        720
+      ],
+      "image_size": 640,
+      "confidence": 0.35,
+      "iou": 0.5,
+      "warmup_batches": 10,
+      "measured_batches": 60,
+      "frames_processed": 60,
+      "load_ms": 396.09170000767335,
+      "aggregate_fps": 4.95454481756914,
+      "fps_per_stream": 4.95454481756914,
+      "stage_ms_per_batch_mean": {
+        "decode_resize": 1.3014383337576874,
+        "infer_batch": 195.64255500032837,
+        "filter_nms": 0.20556833308849795,
+        "render": 1.0363983325078152,
+        "jpeg_encode": 3.6475166656600777,
+        "total": 201.8348883340271
+      },
+      "stage_ms_per_frame_mean": {
+        "decode_resize": 1.3014383337576874,
+        "infer_batch": 195.64255500032837,
+        "filter_nms": 0.20556833308849795,
+        "render": 1.0363983325078152,
+        "jpeg_encode": 3.6475166656600777,
+        "total": 201.8348883340271
+      },
+      "stage_ms_per_batch_p95": {
+        "decode_resize": 1.4599999994970858,
+        "infer_batch": 200.1111999998102,
+        "filter_nms": 0.3222999948775396,
+        "render": 1.2752999900840223,
+        "jpeg_encode": 4.085199994733557,
+        "total": 206.9430999981705
+      },
+      "detections_per_batch_mean": 4.55,
+      "jpeg_bytes_per_frame_mean": 65143.01666666667
+    },
+    {
+      "name": "yolo26l_fp32_onnx_720p_cpu_2_stream",
+      "status": "ok",
+      "model": "models\\checkpoints\\experiments\\yolo26l_fp32.onnx",
+      "model_sha256": "686bc3d820c678b74a912b0147d536ddfcf1a64c3922e22c3c55f027d0dc5c0c",
+      "backend": "onnxruntime",
+      "provider": "CPUExecutionProvider",
+      "requested_device": "cpu",
+      "actual_device": "cpu",
+      "streams": 2,
+      "videos": [
+        "data\\demo\\upload-1ab457f5ec0e.mp4",
+        "data\\demo\\upload-2b68d703f40d.mp4"
+      ],
+      "resolution": [
+        1280,
+        720
+      ],
+      "image_size": 640,
+      "confidence": 0.35,
+      "iou": 0.5,
+      "warmup_batches": 10,
+      "measured_batches": 60,
+      "frames_processed": 120,
+      "load_ms": 239.31309999898076,
+      "aggregate_fps": 4.884479197351047,
+      "fps_per_stream": 2.4422395986755236,
+      "stage_ms_per_batch_mean": {
+        "decode_resize": 5.018003334407695,
+        "infer_batch": 395.1797633327563,
+        "filter_nms": 0.30077000095237355,
+        "render": 1.7347166659116435,
+        "jpeg_encode": 7.225336666063716,
+        "total": 409.4602350000059
+      },
+      "stage_ms_per_frame_mean": {
+        "decode_resize": 2.5090016672038473,
+        "infer_batch": 197.58988166637815,
+        "filter_nms": 0.15038500047618678,
+        "render": 0.8673583329558218,
+        "jpeg_encode": 3.612668333031858,
+        "total": 204.73011750000296
+      },
+      "stage_ms_per_batch_p95": {
+        "decode_resize": 5.5896000121720135,
+        "infer_batch": 404.27050000289455,
+        "filter_nms": 0.43559999903663993,
+        "render": 2.053200005320832,
+        "jpeg_encode": 7.926399994175881,
+        "total": 419.1953999979887
+      },
+      "detections_per_batch_mean": 4.55,
+      "jpeg_bytes_per_frame_mean": 59347.15
+    },
+    {
+      "name": "yolo26l_int8_onnx_720p_cpu_1_stream",
+      "status": "ok",
+      "model": "models\\checkpoints\\experiments\\yolo26l_int8.onnx",
+      "model_sha256": "79be59f4510dc5467e34ec4f05acb3f12d80fe69fbaec7c7c91fddb2fddfa754",
+      "backend": "onnxruntime",
+      "provider": "CPUExecutionProvider",
+      "requested_device": "cpu",
+      "actual_device": "cpu",
+      "streams": 1,
+      "videos": [
+        "data\\demo\\upload-1ab457f5ec0e.mp4"
+      ],
+      "resolution": [
+        1280,
+        720
+      ],
+      "image_size": 640,
+      "confidence": 0.35,
+      "iou": 0.5,
+      "warmup_batches": 10,
+      "measured_batches": 60,
+      "frames_processed": 60,
+      "load_ms": 388.14779999665916,
+      "aggregate_fps": 11.268566583419902,
+      "fps_per_stream": 11.268566583419902,
+      "stage_ms_per_batch_mean": {
+        "decode_resize": 1.320123332698131,
+        "infer_batch": 83.0590566668737,
+        "filter_nms": 0.060899997576295085,
+        "render": 0.7114983340822315,
+        "jpeg_encode": 3.589366665983107,
+        "total": 88.7424316657416
+      },
+      "stage_ms_per_frame_mean": {
+        "decode_resize": 1.320123332698131,
+        "infer_batch": 83.0590566668737,
+        "filter_nms": 0.060899997576295085,
+        "render": 0.7114983340822315,
+        "jpeg_encode": 3.589366665983107,
+        "total": 88.7424316657416
+      },
+      "stage_ms_per_batch_p95": {
+        "decode_resize": 1.5048000059323385,
+        "infer_batch": 87.48370000103023,
+        "filter_nms": 0.09929999941959977,
+        "render": 0.8159999997587875,
+        "jpeg_encode": 4.089800000656396,
+        "total": 93.27939999639057
+      },
+      "detections_per_batch_mean": 0.0,
+      "jpeg_bytes_per_frame_mean": 54467.28333333333
+    },
+    {
+      "name": "yolo26l_int8_onnx_720p_cpu_2_stream",
+      "status": "ok",
+      "model": "models\\checkpoints\\experiments\\yolo26l_int8.onnx",
+      "model_sha256": "79be59f4510dc5467e34ec4f05acb3f12d80fe69fbaec7c7c91fddb2fddfa754",
+      "backend": "onnxruntime",
+      "provider": "CPUExecutionProvider",
+      "requested_device": "cpu",
+      "actual_device": "cpu",
+      "streams": 2,
+      "videos": [
+        "data\\demo\\upload-1ab457f5ec0e.mp4",
+        "data\\demo\\upload-2b68d703f40d.mp4"
+      ],
+      "resolution": [
+        1280,
+        720
+      ],
+      "image_size": 640,
+      "confidence": 0.35,
+      "iou": 0.5,
+      "warmup_batches": 10,
+      "measured_batches": 60,
+      "frames_processed": 120,
+      "load_ms": 374.1567000106443,
+      "aggregate_fps": 11.010059864248385,
+      "fps_per_stream": 5.5050299321241924,
+      "stage_ms_per_batch_mean": {
+        "decode_resize": 4.691573333790681,
+        "infer_batch": 168.25176833275086,
+        "filter_nms": 0.08952999924076721,
+        "render": 1.3851816668951262,
+        "jpeg_encode": 7.232486666422726,
+        "total": 181.65205499875205
+      },
+      "stage_ms_per_frame_mean": {
+        "decode_resize": 2.3457866668953407,
+        "infer_batch": 84.12588416637543,
+        "filter_nms": 0.044764999620383605,
+        "render": 0.6925908334475631,
+        "jpeg_encode": 3.616243333211363,
+        "total": 90.82602749937602
+      },
+      "stage_ms_per_batch_p95": {
+        "decode_resize": 4.99889999628067,
+        "infer_batch": 176.26439999730792,
+        "filter_nms": 0.11239999730605632,
+        "render": 1.6351999947801232,
+        "jpeg_encode": 8.121799997752532,
+        "total": 190.4151000053389
+      },
+      "detections_per_batch_mean": 0.0,
+      "jpeg_bytes_per_frame_mean": 54009.28333333333
+    }
+  ],
+  "errors": []
+}

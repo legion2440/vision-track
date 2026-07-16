@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -46,6 +47,9 @@ def main() -> None:
         help="Defaults to the pruned checkpoint when present, otherwise best.pt",
     )
     parser.add_argument("--calibration-images", type=int)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--fp32-output", type=Path)
+    parser.add_argument("--report", type=Path, default=ROOT / "reports" / "quantization_report.json")
     args = parser.parse_args()
 
     import cv2
@@ -86,7 +90,10 @@ def main() -> None:
             device="cpu",
         )
     )
-    fp32_path = ROOT / "models" / "checkpoints" / "quantization_source_fp32.onnx"
+    fp32_path = args.fp32_output or (
+        ROOT / "models" / "checkpoints" / "quantization_source_fp32.onnx"
+    )
+    fp32_path.parent.mkdir(parents=True, exist_ok=True)
     exported.replace(fp32_path)
     onnx.checker.check_model(onnx.load(str(fp32_path)))
     session = ort.InferenceSession(str(fp32_path), providers=["CPUExecutionProvider"])
@@ -95,7 +102,8 @@ def main() -> None:
         train_images,
         config.model.image_size,
     )
-    destination = resolve_project_path(config.model.quantized_checkpoint)
+    destination = args.output or resolve_project_path(config.model.quantized_checkpoint)
+    destination.parent.mkdir(parents=True, exist_ok=True)
     quantize_static(
         str(fp32_path),
         str(destination),
@@ -124,8 +132,11 @@ def main() -> None:
     report = {
         "status": "quantized_and_verified",
         "source_model": str(source),
+        "source_model_sha256": hashlib.sha256(Path(source).read_bytes()).hexdigest(),
         "fp32_onnx": str(fp32_path),
+        "fp32_onnx_sha256": hashlib.sha256(fp32_path.read_bytes()).hexdigest(),
         "quantized_model": str(destination),
+        "quantized_model_sha256": hashlib.sha256(destination.read_bytes()).hexdigest(),
         "calibration_split": "train",
         "calibration_images": len(train_images),
         "fp32_size_mb": fp32_path.stat().st_size / 1_000_000,
@@ -134,9 +145,8 @@ def main() -> None:
         "verification_latency_ms": result.latency_ms,
         "verification_detections": len(result.detections),
     }
-    (ROOT / "reports" / "quantization_report.json").write_text(
-        json.dumps(report, indent=2) + "\n", encoding="utf-8"
-    )
+    args.report.parent.mkdir(parents=True, exist_ok=True)
+    args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(report, indent=2))
 
 

@@ -1,0 +1,66 @@
+{
+  "status": "rejected",
+  "model_id": "quantized_n_int8",
+  "source_model": "models/checkpoints/best.pt",
+  "source_model_sha256": "ab09e99711a9057442691bde03802c86d6b0e63a61f1957b1c013f78134073aa",
+  "experimental_artifacts": {
+    "fp32_onnx": {
+      "path": "models\\checkpoints\\experiments\\fine_tuned_n_fp32.onnx",
+      "sha256": "3a35f04e729387a3c9243f0ae8da719ded257ccddc6dbe48aa74ce9b71f51e41",
+      "bytes": 9805056
+    },
+    "int8_onnx": {
+      "path": "models\\checkpoints\\experiments\\fine_tuned_n_int8.onnx",
+      "sha256": "41746b4dedd6356c523ddf99aba0dfcf63d6335a32d3c67ac7f5bca1e3a5dd6d",
+      "bytes": 3097863
+    }
+  },
+  "validation_protocol": {
+    "split": "val",
+    "test_used": false,
+    "evaluator": "Ultralytics standard evaluator on ONNX Runtime CPUExecutionProvider"
+  },
+  "baseline_val": {
+    "model_name": "models\\training_runs\\full_a\\a_full_20260714T193616Z\\ultralytics\\a_full\\weights\\best.pt",
+    "split": "val",
+    "device": "cuda",
+    "detection_precision": 0.8146660003176247,
+    "detection_recall": 0.6876577847455296,
+    "f1_score": 0.7457931807454792,
+    "mAP50": 0.7902235340113084,
+    "mAP50_95": 0.5451791263475556,
+    "speed_ms": {
+      "preprocess": 1.3634673105521655,
+      "inference": 2.957527117377428,
+      "loss": 0.000654829163382793,
+      "postprocess": 0.32241106984107987
+    }
+  },
+  "int8_val": {
+    "model_name": "models\\checkpoints\\experiments\\fine_tuned_n_int8.onnx",
+    "split": "val",
+    "device": "cpu",
+    "detection_precision": 0.0,
+    "detection_recall": 0.0,
+    "f1_score": 0.0,
+    "mAP50": 0.0,
+    "mAP50_95": 0.0,
+    "speed_ms": {
+      "preprocess": 0.6335651560437092,
+      "inference": 24.101292124821306,
+      "loss": 0.0012477711178666814,
+      "postprocess": 0.17466471014109497
+    }
+  },
+  "gates": {
+    "artifact_accepted": false,
+    "production_path_created": false,
+    "required_nonzero_metrics": false,
+    "max_allowed_f1_drop_pp": 1.0,
+    "max_allowed_map50_95_drop_pp": 1.0,
+    "observed_f1_drop_pp": 74.57931807454791,
+    "observed_map50_95_drop_pp": 54.51791263475556
+  },
+  "decision": "Do not create models/checkpoints/best_quantized.onnx; keep ONNX files ignored as failed experimental artifacts.",
+  "reason": "INT8 export loads and runs, but val precision/recall/F1/mAP are all zero."
+}

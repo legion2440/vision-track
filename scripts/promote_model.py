@@ -171,9 +171,10 @@ def verify_yolo_checkpoint(
     names = _normalized_names(getattr(model, "names", None))
     if task != "detect":
         raise RuntimeError(f"Checkpoint task must be detect, got {task!r}")
-    if names != {0: "person"}:
+    person_name = names.get(person_class_id)
+    if person_name != "person":
         raise RuntimeError(
-            "Runtime checkpoint must contain exactly class 0=person, "
+            f"Runtime checkpoint must contain class {person_class_id}=person, "
             f"got {names!r}"
         )
     inference_smoke = _inference_smoke(
@@ -188,6 +189,10 @@ def verify_yolo_checkpoint(
         "status": "passed",
         "task": task,
         "names": {str(index): name for index, name in names.items()},
+        "class_count": len(names),
+        "person_class_id": person_class_id,
+        "person_class_name": person_name,
+        "multiclass_checkpoint": len(names) > 1,
         "inference_smoke": inference_smoke,
     }
 

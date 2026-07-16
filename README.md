@@ -132,7 +132,14 @@ python -c "import torch, supervision, cv2, streamlit"
 2. MPS when `torch.backends.mps.is_available()` is true.
 3. CPU otherwise.
 
-The UI and benchmark display the actual device and backend/provider. Available UI backends are derived from real artifacts: PyTorch is available through `best.pt` or the pretrained `yolo26n.pt`; ONNX Runtime appears only when `best_quantized.onnx` exists.
+The UI and benchmark display the actual device and backend/provider. The
+sidebar selects an explicit model from the model registry. The bundled default
+is the fine-tuned nano transfer-learning checkpoint at
+`models/checkpoints/best.pt`, which is small enough to keep in ordinary Git.
+Pretrained M/L/X are offered by official Ultralytics model names and are
+downloaded on demand when selected. If a pretrained model is unavailable or the
+download fails, the app keeps the existing bundled nano runtime instead of
+crashing. INT8 ONNX models are only selectable after their validation gates pass.
 
 ## Dataset
 
@@ -233,9 +240,10 @@ python scripts/evaluate_model.py \
 
 Training never replaces the runtime checkpoint. After evaluation and model
 selection, promotion is a separate explicit step with mandatory source,
-destination, and expected SHA-256. The command verifies the one-class person
-detector, runs a deterministic inference smoke on the staged checkpoint using
-the project model settings and the runtime-selected device (CUDA when
+destination, and expected SHA-256. The command verifies a detect checkpoint,
+requires class `0=person` even for multiclass COCO checkpoints, runs a
+deterministic inference smoke with person filtering on the staged checkpoint
+using the project model settings and the runtime-selected device (CUDA when
 available), and only then publishes it atomically:
 
 ```bash
@@ -246,6 +254,51 @@ python scripts/promote_model.py \
 ```
 
 Promotion evidence is written separately under `reports/model_promotions/`.
+
+Current model roles are intentionally separated:
+
+- `models/checkpoints/best.pt`: bundled full-A fine-tuned nano checkpoint.
+- `yolo26m.pt`: official Ultralytics pretrained balanced option, downloaded on demand.
+- `yolo26l.pt`: official Ultralytics pretrained recommended GPU option, downloaded on demand.
+- `yolo26x.pt`: official Ultralytics pretrained maximum-quality option, downloaded on demand.
+- `models/checkpoints/experiments/yolo26l_int8.onnx`: ignored failed L INT8 experiment.
+- `models/checkpoints/experiments/fine_tuned_n_int8.onnx`: ignored failed nano INT8 experiment.
+
+The recorded SHA-256 values for reproducibility are:
+
+| Model | Source name/path | SHA-256 |
+|---|---|---|
+| bundled fine-tuned N | `models/checkpoints/best.pt` | `ab09e99711a9057442691bde03802c86d6b0e63a61f1957b1c013f78134073aa` |
+| pretrained M | `yolo26m.pt` | `401cea9ab23ad19246ff7744859816bc599f350e93c9dd30367b6f0a0745d0b7` |
+| pretrained L | `yolo26l.pt` | `9fe3c544f2b19bebad7ea41e76d7ad3d88b7c2f10d11d24430c5311f6b32db26` |
+| pretrained X | `yolo26x.pt` | `9fdd44a31c504547ffb81d2c6d9e6dac3493c8eaa8b0398d3f43bae6c7003e92` |
+
+The isolated test split was used once for the frozen full-A nano decision.
+Pretrained M/L/X and INT8 comparisons are validation-only.
+
+### Current validation and deployment summary
+
+`reports/performance_metrics.json` is the canonical machine-readable summary.
+COCO-person is used as the general benchmark. Fine-tuned nano demonstrates the
+transfer-learning workflow, while pretrained scaling shows the deployment
+quality/speed trade-off.
+
+| Model | Split | P | R | F1 | mAP50 | mAP50-95 | GPU 1-stream FPS | GPU 2-stream FPS |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| full-A nano bundled | test once after freeze | 0.8096 | 0.6721 | 0.7345 | 0.7766 | 0.5290 | 76.74 | 64.11 |
+| pretrained M | val | 0.8529 | 0.7516 | 0.7990 | 0.8555 | 0.6406 | 42.71 | 57.51 |
+| pretrained L | val | 0.8533 | 0.7565 | 0.8020 | 0.8606 | 0.6499 | 36.29 | 47.38 |
+| pretrained X | val | 0.8590 | 0.7735 | 0.8140 | 0.8740 | 0.6681 | 22.87 | 36.83 |
+| L INT8 ONNX | val | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | n/a | n/a |
+| fine-tuned N INT8 ONNX | val | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | n/a | n/a |
+
+Scaling to X improves validation quality but still does not satisfy the quality
+targets simultaneously. L is selected as the recommended GPU option because it
+is close to X quality while being materially faster and more realistic on the
+checked hardware. X remains the maximum-quality option. The bundled nano is the
+portable fallback and the transfer-learning deliverable. FPS depends on the
+user's device, so the application exposes explicit model selection instead of
+hidden automatic hardware-based switching.
 
 Ultralytics performs its own resize, letterbox, tensor conversion, and normalization. The project does not apply a second manual normalization path to PyTorch inference.
 
@@ -266,30 +319,26 @@ This is structural pruning, not a PyTorch mask that merely writes zeros.
 
 ## ONNX INT8 quantization
 
-The quantization script chooses `best_pruned.pt` when available, otherwise `best.pt`. It exports FP32 ONNX, calibrates static QDQ INT8 using only train-split images, checks both ONNX models, loads the INT8 model in ONNX Runtime, and executes real inference before declaring success.
+The quantization workflow exports FP32 ONNX and calibrates static QDQ INT8 using
+only train-split images. INT8 is written as an experimental artifact first:
 
 ```bash
-python scripts/quantize.py
+models/checkpoints/experiments/<model>_int8.onnx
 ```
 
-Output:
+Only after the artifact loads, runs inference, loses at most one absolute
+percentage point of F1 and mAP50-95 on validation, and improves CPU throughput
+by at least 15% may it be promoted to
+`models/checkpoints/best_quantized.onnx`.
 
-- `models/checkpoints/best_quantized.onnx`
-- `reports/quantization_report.json`
+Current INT8 status:
 
-Compare validation artifacts:
-
-```bash
-python scripts/compare_artifacts.py --split val
-```
-
-Run the isolated final comparison only after all choices are frozen:
-
-```bash
-python scripts/compare_artifacts.py \
-  --split test \
-  --acknowledge-test-isolation
-```
+- Pretrained L INT8 is rejected: FP32 export was 99.6 MB, INT8 was 26.2 MB,
+  but validation precision/recall/mAP were all zero.
+- Fine-tuned nano INT8 is rejected: FP32 export was 9.8 MB, INT8 was 3.1 MB,
+  load/inference smoke passed, but validation precision/recall/F1/mAP were all
+  zero.
+- `models/checkpoints/best_quantized.onnx` is therefore not produced.
 
 Tracking scores such as IDF1, HOTA, MOTA, and ID switches are not reported because COCO detection labels do not contain ground-truth trajectories.
 
@@ -348,7 +397,7 @@ Sidebar controls:
 - confidence and IoU;
 - ByteTrack activation, lost-buffer, and matching thresholds;
 - detection/tracking/counting toggles;
-- available backend;
+- detector model from the registry;
 - start, stop, restart, reset counters, start all, stop all.
 
 The main area shows a stream grid and selected-stream detail: rendered frame, source/lifecycle/error state, actual device/backend, FPS, model and end-to-end latency, dropped-frame rate, in/out counts, and occupancy.
@@ -366,9 +415,10 @@ The loopback preview assumes Streamlit and the browser run on the same machine. 
 ```text
 models/checkpoints/best.pt
 models/checkpoints/best_pruned.pt
-models/checkpoints/best_quantized.onnx
+models/checkpoints/best_quantized.onnx  # only after an INT8 gate passes
 reports/demo_results/roi_counting_example.png
 reports/demo_results/multi_stream_demo.mp4
+reports/demo_results/demo_metadata.json
 ```
 
 ## Tests and audit checks

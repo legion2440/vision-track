@@ -1,0 +1,65 @@
+{
+  "status": "complete",
+  "generated_at": "2026-07-16T09:35:00Z",
+  "artifacts": {
+    "video": {
+      "path": "reports/demo_results/multi_stream_demo.mp4",
+      "sha256": "4dfeb19b3ad73f5ffbac8a5e386b5914443957f68af409aa6cbba409c12e30c4",
+      "bytes": 8777172
+    },
+    "image": {
+      "path": "reports/demo_results/roi_counting_example.png",
+      "sha256": "5cc69121967dfc5ecaa0a994ae4defebe572cceec8b60649f3bb8de590f7828a",
+      "bytes": 90220
+    }
+  },
+  "model": {
+    "id": "fine_tuned_n",
+    "path": "models/checkpoints/best.pt",
+    "sha256": "ab09e99711a9057442691bde03802c86d6b0e63a61f1957b1c013f78134073aa",
+    "backend": "pytorch",
+    "type": "fine-tuned",
+    "promotion_report": "reports/model_promotions/fine_tuned_n_to_best_pt.json"
+  },
+  "runtime": {
+    "device_request": "cuda",
+    "device": {
+      "kind": "cuda",
+      "torch_device": "0",
+      "name": "NVIDIA GeForce RTX 4080 Laptop GPU",
+      "backend": "PyTorch CUDA"
+    },
+    "confidence": 0.35,
+    "iou": 0.5,
+    "image_size": 640,
+    "person_class_id": 0
+  },
+  "inputs": [
+    "data/demo/upload-1ab457f5ec0e.mp4",
+    "data/demo/upload-2b68d703f40d.mp4"
+  ],
+  "parameters": {
+    "frames": 300,
+    "output_fps": 20.0,
+    "tile_size": [
+      640,
+      360
+    ],
+    "grid_size": [
+      1280,
+      360
+    ]
+  },
+  "hardware": {
+    "platform": "Windows-11-10.0.26200-SP0"
+  },
+  "software_versions": {
+    "python": "3.13.5",
+    "os": "Windows-11-10.0.26200-SP0",
+    "vision-track": "not-installed",
+    "torch": "2.12.1+cu130",
+    "ultralytics": "8.4.78",
+    "opencv-python": "4.13.0.92",
+    "numpy": "2.4.6"
+  }
+}

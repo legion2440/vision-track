@@ -1,0 +1,39 @@
+{
+  "status": "quantized_and_verified",
+  "computed_at": "2026-07-16T08:01:15.531033+00:00",
+  "test_used": false,
+  "source_fp32_onnx": {
+    "path": "models\\checkpoints\\experiments\\yolo26l_fp32.onnx",
+    "sha256": "686bc3d820c678b74a912b0147d536ddfcf1a64c3922e22c3c55f027d0dc5c0c",
+    "bytes": 99613370
+  },
+  "quantized_model": {
+    "path": "models\\checkpoints\\experiments\\yolo26l_int8.onnx",
+    "sha256": "79be59f4510dc5467e34ec4f05acb3f12d80fe69fbaec7c7c91fddb2fddfa754",
+    "bytes": 26190546
+  },
+  "calibration": {
+    "split": "train",
+    "images": 256,
+    "image_size": 640
+  },
+  "quantization": {
+    "format": "QDQ",
+    "activation_type": "QUInt8",
+    "weight_type": "QInt8",
+    "per_channel": true,
+    "duration_ms": 105385.351
+  },
+  "smoke_inference": {
+    "status": "passed",
+    "provider": "CPUExecutionProvider",
+    "latency_ms": 85.8862000022782,
+    "detections": 0,
+    "classes": []
+  },
+  "size": {
+    "fp32_mb": 99.61337,
+    "int8_mb": 26.190546,
+    "reduction_percent": 73.70780046895311
+  }
+}

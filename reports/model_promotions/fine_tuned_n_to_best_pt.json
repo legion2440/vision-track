@@ -1,0 +1,151 @@
+{
+  "schema_version": 2,
+  "status": "complete",
+  "run_id": "fine_tuned_n_to_best_pt",
+  "started_at": "2026-07-16T09:22:57.394267Z",
+  "completed_at": "2026-07-16T09:23:01.421773Z",
+  "promotion": {
+    "source": "models/training_runs/full_a/a_full_20260714T193616Z/ultralytics/a_full/weights/best.pt",
+    "destination": "models/checkpoints/best.pt",
+    "expected_sha256": "ab09e99711a9057442691bde03802c86d6b0e63a61f1957b1c013f78134073aa",
+    "source_sha256": "ab09e99711a9057442691bde03802c86d6b0e63a61f1957b1c013f78134073aa",
+    "destination_sha256": "ab09e99711a9057442691bde03802c86d6b0e63a61f1957b1c013f78134073aa",
+    "bytes": 5365509,
+    "previous_destination": {
+      "existed": true,
+      "sha256": "ab09e99711a9057442691bde03802c86d6b0e63a61f1957b1c013f78134073aa",
+      "bytes": 5365509
+    },
+    "source_verification": {
+      "status": "passed",
+      "task": "detect",
+      "names": {
+        "0": "person"
+      },
+      "class_count": 1,
+      "person_class_id": 0,
+      "person_class_name": "person",
+      "multiclass_checkpoint": false,
+      "inference_smoke": {
+        "status": "passed",
+        "input": {
+          "kind": "deterministic_synthetic_frame",
+          "shape": [
+            640,
+            640,
+            3
+          ],
+          "dtype": "uint8",
+          "color_space": "BGR",
+          "sha256": "99987604beb01a89bf853be18e7d1b90177ea7861e48519e33a2d0bc67eb3633"
+        },
+        "parameters": {
+          "image_size": 640,
+          "confidence": 0.35,
+          "iou": 0.5,
+          "classes": [
+            0
+          ],
+          "requested_device": "cpu"
+        },
+        "observed_output_device": "cpu",
+        "result_count": 1,
+        "detection_count": 0,
+        "outputs_finite": true,
+        "wall_time_ms": 161.757,
+        "ultralytics_speed_ms": {
+          "preprocess": 35.87739999056794,
+          "inference": 84.82440000807401,
+          "postprocess": 0.4288000054657459
+        }
+      }
+    },
+    "staged_verification": {
+      "status": "passed",
+      "task": "detect",
+      "names": {
+        "0": "person"
+      },
+      "class_count": 1,
+      "person_class_id": 0,
+      "person_class_name": "person",
+      "multiclass_checkpoint": false,
+      "inference_smoke": {
+        "status": "passed",
+        "input": {
+          "kind": "deterministic_synthetic_frame",
+          "shape": [
+            640,
+            640,
+            3
+          ],
+          "dtype": "uint8",
+          "color_space": "BGR",
+          "sha256": "99987604beb01a89bf853be18e7d1b90177ea7861e48519e33a2d0bc67eb3633"
+        },
+        "parameters": {
+          "image_size": 640,
+          "confidence": 0.35,
+          "iou": 0.5,
+          "classes": [
+            0
+          ],
+          "requested_device": "cpu"
+        },
+        "observed_output_device": "cpu",
+        "result_count": 1,
+        "detection_count": 0,
+        "outputs_finite": true,
+        "wall_time_ms": 65.703,
+        "ultralytics_speed_ms": {
+          "preprocess": 2.000599997700192,
+          "inference": 39.67640000337269,
+          "postprocess": 0.2308999974047765
+        }
+      }
+    },
+    "publication": {
+      "atomic": true,
+      "method": "verified same-directory temporary file followed by os.replace",
+      "staged_inference_verified_before_replace": true
+    }
+  },
+  "verification_config": {
+    "project_config": "configs/app.yaml",
+    "image_size": 640,
+    "confidence": 0.35,
+    "iou": 0.5,
+    "person_class_id": 0,
+    "device_request": "cpu",
+    "selected_device": {
+      "kind": "cpu",
+      "torch_device": "cpu",
+      "name": "CPU",
+      "backend": "PyTorch CPU"
+    }
+  },
+  "environment": {
+    "captured_at": "2026-07-16T09:23:01.474728Z",
+    "python": {
+      "version": "3.13.5 (tags/v3.13.5:6cb20a2, Jun 11 2025, 16:15:46) [MSC v.1943 64 bit (AMD64)]",
+      "executable": "D:/TSchool/vision-track/.venv/Scripts/python.exe",
+      "required": "==3.13.*"
+    },
+    "platform": "Windows-11-10.0.26200-SP0",
+    "packages": {
+      "vision-track": "not-installed",
+      "torch": "2.12.1+cu130",
+      "ultralytics": "8.4.78",
+      "numpy": "2.4.6"
+    },
+    "cuda": {
+      "available": true,
+      "torch_cuda_version": "13.0",
+      "cudnn_version": null,
+      "device_count": 0,
+      "devices": []
+    },
+    "nvidia_smi": "NVIDIA GeForce RTX 4080 Laptop GPU, 610.47, 12282, 9999, P8, 6.87"
+  },
+  "report": "reports/model_promotions/fine_tuned_n_to_best_pt.json"
+}

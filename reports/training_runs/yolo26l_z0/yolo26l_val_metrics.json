@@ -1,0 +1,16 @@
+{
+  "model_name": "yolo26l.pt",
+  "split": "val",
+  "device": "cuda",
+  "detection_precision": 0.853276310940179,
+  "detection_recall": 0.7565442489740372,
+  "f1_score": 0.8020040269108928,
+  "mAP50": 0.8605794927980945,
+  "mAP50_95": 0.6498525312937524,
+  "speed_ms": {
+    "preprocess": 0.892093833587371,
+    "inference": 29.114675482938807,
+    "loss": 0.0004083952953157473,
+    "postprocess": 0.20352526000330023
+  }
+}
